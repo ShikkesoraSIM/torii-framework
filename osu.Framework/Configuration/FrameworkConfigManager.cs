@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using osu.Framework.Configuration.Tracking;
 using osu.Framework.Extensions;
+using osu.Framework.Graphics.Rendering.LowLatency;
 using osu.Framework.Graphics.Video;
 using osu.Framework.Input;
 using osu.Framework.Platform;
@@ -43,6 +44,7 @@ namespace osu.Framework.Configuration
             SetDefault(FrameworkSetting.Renderer, RendererType.Automatic);
             SetDefault(FrameworkSetting.ShowUnicode, false);
             SetDefault(FrameworkSetting.Locale, string.Empty);
+            SetDefault(FrameworkSetting.LatencyMode, LatencyMode.Off);
 
 #pragma warning disable 618
             SetDefault(FrameworkSetting.MapAbsoluteInputToWindow, false);
@@ -99,6 +101,7 @@ namespace osu.Framework.Configuration
 
         Renderer,
         WindowMode,
+        LatencyMode,
         ConfineMouseMode,
         FrameSync,
         ExecutionMode,

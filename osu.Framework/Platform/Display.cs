@@ -33,6 +33,7 @@ namespace osu.Framework.Platform
         /// The zero-based index of the <see cref="Display"/>.
         /// </summary>
         public int Index { get; }
+        public object UsableBounds { get; set; }
 
         public Display(int index, string? name, Rectangle bounds, DisplayMode[] displayModes)
         {

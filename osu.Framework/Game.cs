@@ -404,7 +404,7 @@ namespace osu.Framework
                 case FrameworkAction.CycleFrameSync:
                     var nextFrameSync = frameSyncMode.Value + 1;
 
-                    if (nextFrameSync > FrameSync.Unlimited)
+                    if (nextFrameSync > FrameSync.UnlimitedNoCap)
                         nextFrameSync = FrameSync.VSync;
 
                     frameSyncMode.Value = nextFrameSync;

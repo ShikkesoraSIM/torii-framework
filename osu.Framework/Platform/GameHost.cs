@@ -30,6 +30,7 @@ using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.OpenGL;
 using osu.Framework.Graphics.Rendering;
 using osu.Framework.Graphics.Rendering.Deferred;
+using osu.Framework.Graphics.Rendering.LowLatency;
 using osu.Framework.Input;
 using osu.Framework.Input.Bindings;
 using osu.Framework.Input.Handlers;
@@ -458,14 +459,21 @@ namespace osu.Framework.Platform
             Exited?.Invoke();
         }
 
-        private readonly TripleBuffer<DrawNode> drawRoots = new TripleBuffer<DrawNode>();
+        private readonly TripleBuffer<DrawBufferData> drawRoots = new TripleBuffer<DrawBufferData>();
 
         internal Container Root { get; private set; }
 
         private ulong frameCount;
 
+        private class DrawBufferData
+        {
+            public DrawNode Node;
+            public ulong FrameCount;
+        }
+
         protected virtual void UpdateFrame()
         {
+            FrameSleep();
             if (Root == null) return;
 
             frameCount++;
@@ -483,11 +491,19 @@ namespace osu.Framework.Platform
 
             TypePerformanceMonitor.NewFrame();
 
+            LatencyMark(LatencyMarker.SimulationStart, frameCount);
+
             Root.UpdateSubTree();
             Root.UpdateSubTreeMasking();
 
             using (var buffer = drawRoots.GetForWrite())
-                buffer.Object = Root.GenerateDrawNodeSubtree(frameCount, buffer.Index, false);
+            {
+                buffer.Object ??= new DrawBufferData();
+                buffer.Object.Node = Root.GenerateDrawNodeSubtree(frameCount, buffer.Index, false);
+                buffer.Object.FrameCount = frameCount;
+            }
+
+            LatencyMark(LatencyMarker.SimulationEnd, frameCount);
         }
 
         private bool didRenderFrame;
@@ -507,7 +523,7 @@ namespace osu.Framework.Platform
 
             Renderer.AllowTearing = windowMode.Value == WindowMode.Fullscreen;
 
-            TripleBuffer<DrawNode>.Buffer buffer;
+            TripleBuffer<DrawBufferData>.Buffer buffer;
 
             using (drawMonitor.BeginCollecting(PerformanceCollectionType.Sleep))
             {
@@ -524,10 +540,17 @@ namespace osu.Framework.Platform
             if (buffer == null)
                 return;
 
-            Debug.Assert(buffer.Object != null);
 
             try
             {
+                if (buffer.Object is not DrawBufferData data)
+                    return;
+
+                DrawNode rootNode = data.Node;
+                ulong bufferFrameCount = data.FrameCount;
+
+                LatencyMark(LatencyMarker.RenderSubmitStart, bufferFrameCount);
+
                 using (drawMonitor.BeginCollecting(PerformanceCollectionType.DrawReset))
                     Renderer.BeginFrame(new Vector2(Window.ClientSize.Width, Window.ClientSize.Height));
 
@@ -539,7 +562,7 @@ namespace osu.Framework.Platform
                     Renderer.PushDepthInfo(DepthInfo.Default);
 
                     // Front pass
-                    DrawNode.DrawOtherOpaqueInterior(buffer.Object, Renderer);
+                    DrawNode.DrawOtherOpaqueInterior(rootNode, Renderer);
 
                     Renderer.PopDepthInfo();
                     Renderer.SetBlendMask(BlendingMask.All);
@@ -554,14 +577,20 @@ namespace osu.Framework.Platform
                 }
 
                 // Back pass
-                DrawNode.DrawOther(buffer.Object, Renderer);
+                DrawNode.DrawOther(rootNode, Renderer);
 
                 Renderer.PopDepthInfo();
 
                 Renderer.FinishFrame();
 
+                LatencyMark(LatencyMarker.RenderSubmitEnd, bufferFrameCount);
+
                 using (drawMonitor.BeginCollecting(PerformanceCollectionType.SwapBuffer))
+                {
+                    LatencyMark(LatencyMarker.PresentStart, bufferFrameCount);
                     Swap();
+                    LatencyMark(LatencyMarker.PresentEnd, bufferFrameCount);
+                }
 
                 Window.OnDraw();
                 didRenderFrame = true;
@@ -1214,6 +1243,8 @@ namespace osu.Framework.Platform
 
         private Bindable<FrameSync> frameSyncMode;
 
+        private Bindable<LatencyMode> latencyMode;
+
         private IBindable<DisplayMode> currentDisplayMode;
 
         private Bindable<string> ignoredInputHandlers;
@@ -1251,6 +1282,9 @@ namespace osu.Framework.Platform
 
             frameSyncMode = Config.GetBindable<FrameSync>(FrameworkSetting.FrameSync);
             frameSyncMode.ValueChanged += _ => updateFrameSyncMode();
+
+            latencyMode = Config.GetBindable<LatencyMode>(FrameworkSetting.LatencyMode) ?? new Bindable<LatencyMode>(LatencyMode.Off);
+            latencyMode.BindValueChanged(mode => setLowLatencyMode(mode.NewValue), true);
 
 #pragma warning disable 618
             // pragma region can be removed 20210911
@@ -1331,6 +1365,34 @@ namespace osu.Framework.Platform
 
         private void updateFrameSyncMode()
         {
+            // Set AudioThread and InputThread frame rates (can be done without window)
+            if (AudioThread != null && InputThread != null)
+            {
+                if (frameSyncMode?.Value == FrameSync.UnlimitedNoCap)
+                {
+                    AudioThread.ActiveHz = double.MaxValue;
+                    AudioThread.InactiveHz = double.MaxValue;
+                    InputThread.ActiveHz = double.MaxValue;
+                    InputThread.InactiveHz = double.MaxValue;
+
+                    // Enable unlimited frame rate for ThreadRunner (affects InputThread)
+                    if (threadRunner != null)
+                        threadRunner.UnlimitedFrameRate = true;
+                }
+                else
+                {
+                    // Reset to default for other modes
+                    AudioThread.ActiveHz = GameThread.DEFAULT_ACTIVE_HZ;
+                    AudioThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
+                    InputThread.ActiveHz = GameThread.DEFAULT_ACTIVE_HZ;
+                    InputThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
+
+                    // Disable unlimited frame rate for ThreadRunner
+                    if (threadRunner != null)
+                        threadRunner.UnlimitedFrameRate = false;
+                }
+            }
+
             if (Window == null)
                 return;
 
@@ -1340,15 +1402,19 @@ namespace osu.Framework.Platform
             if (refreshRate <= 0)
                 refreshRate = 60;
 
-            int drawLimiter = refreshRate;
-            int updateLimiter = drawLimiter * 2;
+            double drawLimiter = refreshRate;
+            double updateLimiter = drawLimiter * 2;
 
             setVSyncMode();
+
+            // Reset AllowBenchmarkUnlimitedFrames when switching away from UnlimitedNoCap
+            if (frameSyncMode.Value != FrameSync.UnlimitedNoCap)
+                AllowBenchmarkUnlimitedFrames = false;
 
             switch (frameSyncMode.Value)
             {
                 case FrameSync.VSync:
-                    drawLimiter = int.MaxValue;
+                    drawLimiter = double.MaxValue;
                     updateLimiter *= 2;
                     break;
 
@@ -1368,15 +1434,36 @@ namespace osu.Framework.Platform
                     break;
 
                 case FrameSync.Unlimited:
-                    drawLimiter = int.MaxValue;
-                    updateLimiter = int.MaxValue;
+                    drawLimiter = double.MaxValue;
+                    updateLimiter = double.MaxValue;
+                    break;
+
+                case FrameSync.UnlimitedNoCap:
+                    drawLimiter = double.MaxValue;
+                    updateLimiter = double.MaxValue;
+                    AllowBenchmarkUnlimitedFrames = true;
                     break;
             }
 
-            if (!AllowBenchmarkUnlimitedFrames)
+            // If low latency is enabled, we want to limit the draw thread to refresh rate as anything above is unnecessary.
+            // Keep Update thread at 1000hz for input & audio responsiveness, unless UnlimitedNoCap is selected.
+            if (lowLatencyInitialized && latencyMode.Value != LatencyMode.Off && frameSyncMode.Value != FrameSync.UnlimitedNoCap)
             {
-                drawLimiter = Math.Min(maximum_sane_fps, drawLimiter);
-                updateLimiter = Math.Min(maximum_sane_fps, updateLimiter);
+                drawLimiter = refreshRate;
+                updateLimiter = double.MaxValue;
+            }
+
+            if (frameSyncMode.Value == FrameSync.UnlimitedNoCap)
+            {
+                // For UnlimitedNoCap, allow both draw and update to be truly unlimited
+                // This removes the 1000fps cap from both audio/input and rendering
+                drawLimiter = double.MaxValue;
+                updateLimiter = double.MaxValue;
+            }
+            else if (!AllowBenchmarkUnlimitedFrames)
+            {
+                drawLimiter = Math.Min((double)maximum_sane_fps, drawLimiter);
+                updateLimiter = Math.Min((double)maximum_sane_fps, updateLimiter);
             }
 
             MaximumDrawHz = drawLimiter;
@@ -1389,6 +1476,97 @@ namespace osu.Framework.Platform
 
             DrawThread.Scheduler.Add(() => Renderer.VerticalSync = frameSyncMode.Value == FrameSync.VSync);
         }
+
+        private IDirect3D11LowLatencyProvider direct3D11LowLatency = NoOpDirect3D11LowLatencyProvider.INSTANCE;
+        private bool lowLatencyInitialized;
+
+        /// <summary>
+        /// Set the low latency provider to be used by this host.
+        /// </summary>
+        /// <param name="provider">The <see cref="IDirect3D11LowLatencyProvider"/> to use.</param>
+        public void SetLowLatencyProvider(IDirect3D11LowLatencyProvider provider)
+        {
+            direct3D11LowLatency = provider ?? NoOpDirect3D11LowLatencyProvider.INSTANCE;
+            Logger.Log("Low latency provider set to: " + direct3D11LowLatency.GetType().ReadableName());
+            TryInitializeLowLatencyProvider();
+        }
+
+        /// <summary>
+        /// Attempts to initialize the low latency provider if it has not already been initialized.
+        /// </summary>
+        /// <remarks>
+        /// This is called automatically after setting a new low latency provider via <see cref="SetLowLatencyProvider(IDirect3D11LowLatencyProvider)"/>.
+        /// It should only be called manually if the provider was set before the renderer was initialized, or if the renderer has changed.
+        /// </remarks>
+        internal void TryInitializeLowLatencyProvider()
+        {
+            if (lowLatencyInitialized || direct3D11LowLatency is NoOpDirect3D11LowLatencyProvider) return;
+            if (Renderer is not IVeldridRenderer veldridRenderer || !Renderer.IsInitialised) return;
+
+            try
+            {
+                Logger.Log("Attempting to initialize low latency provider...");
+
+                IntPtr deviceHandle = veldridRenderer.Device.GetD3D11Info().Device;
+                if (deviceHandle == IntPtr.Zero) return;
+
+                direct3D11LowLatency.Initialize(deviceHandle);
+                setLowLatencyMode(latencyMode.Value);
+                lowLatencyInitialized = true;
+            }
+            catch (Exception e)
+            {
+                // Intentionally not logged as an error, as failure is expected (this method can be run before renderer initialization).
+                Logger.Log("Failed to initialize low latency provider: " + e, level: LogLevel.Important);
+            }
+        }
+
+        private void setLowLatencyMode(LatencyMode mode)
+        {
+            try
+            {
+                direct3D11LowLatency.SetMode(mode);
+            }
+            catch (Exception e)
+            {
+                logException(e, "unobserved");
+            }
+        }
+
+        internal void LatencyMark(LatencyMarker marker, ulong frameId)
+        {
+            try
+            {
+                direct3D11LowLatency.SetMarker(marker, frameId);
+            }
+            catch (Exception)
+            {
+                // WARNING: Do not log anything here or otherwise catch the error.
+                // This method is called extremely frequently (multiple times per frame) and doing so could cause massive performance degradation.
+            }
+        }
+
+        internal void FrameSleep()
+        {
+            try
+            {
+                direct3D11LowLatency.FrameSleep();
+            }
+            catch (Exception e)
+            {
+                logException(e, "unobserved");
+            }
+        }
+
+        /// <summary>
+        /// Gets the type name of the current low latency provider.
+        /// </summary>
+        /// <returns>The type name of the current low latency provider, or null if not set.</returns>
+        public string GetLowLatencyProviderType()
+        {
+            return direct3D11LowLatency?.GetType().Name;
+        }
+
 
         /// <summary>
         /// Construct all input handlers for this host. The order here decides the priority given to handlers, with the earliest occurring having higher priority.
@@ -1456,8 +1634,7 @@ namespace osu.Framework.Platform
         /// Defines the platform-specific key bindings that will be used by <see cref="PlatformActionContainer"/>.
         /// Should be overridden per-platform to provide native key bindings.
         /// </summary>
-        public virtual IEnumerable<KeyBinding> PlatformKeyBindings => new[]
-        {
+        public virtual IEnumerable<KeyBinding> PlatformKeyBindings => new[] {
             new KeyBinding(new KeyCombination(InputKey.Control, InputKey.X), PlatformAction.Cut),
             new KeyBinding(new KeyCombination(InputKey.Control, InputKey.C), PlatformAction.Copy),
             new KeyBinding(new KeyCombination(InputKey.Control, InputKey.V), PlatformAction.Paste),

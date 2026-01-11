@@ -18,7 +18,7 @@ namespace osu.Framework.Graphics.Animations
         /// The duration in milliseconds of a newly added frame, if no duration is explicitly specified when adding the frame.
         /// Defaults to 60fps.
         /// </summary>
-        public double DefaultFrameLength = 1000.0 / 60.0;
+        public double DefaultFrameLength = 100000.0 / 60.0;
 
         private readonly List<FrameData<T>> frameData;
 

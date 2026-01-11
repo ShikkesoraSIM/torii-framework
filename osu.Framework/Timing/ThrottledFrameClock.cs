@@ -55,6 +55,12 @@ namespace osu.Framework.Timing
                 {
                     throttle();
                 }
+                else if (MaximumUpdateHz >= double.MaxValue)
+                {
+                    // For truly unlimited frame rates (double.MaxValue), completely bypass sleep
+                    // to minimize timing variance and maximize performance consistency
+                    TimeSlept = 0;
+                }
                 else
                 {
                     // Even when running at unlimited frame-rate, we should call the scheduler

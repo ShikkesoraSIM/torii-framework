@@ -38,15 +38,7 @@ namespace osu.Framework.Audio.Asio
             {
                 var devices = new List<AsioDeviceInfo>();
 
-                int deviceCount = BassAsio.DeviceCount;
-                for (int i = 0; i < deviceCount; i++)
-                {
-                    var info = new AsioDeviceInfo();
-                    if (BassAsio.GetDeviceInfo(i, out info))
-                    {
-                        devices.Add(info);
-                    }
-                }
+
 
                 return devices;
             }

@@ -11,6 +11,7 @@ using JetBrains.Annotations;
 using osu.Framework.Extensions.TypeExtensions;
 using osu.Framework.Graphics.Colour;
 using osu.Framework.Graphics.Effects;
+using osu.Framework.Graphics.Shapes;
 using osu.Framework.Lists;
 using osuTK;
 
@@ -26,6 +27,7 @@ namespace osu.Framework.Graphics.Containers
     /// </summary>
     public partial class Container : Container<Drawable>
     {
+        public Box Background { get; set; }
     }
 
     /// <summary>

@@ -36,6 +36,22 @@ namespace osu.Framework.Platform
 
         private double maximumUpdateHz = GameThread.DEFAULT_ACTIVE_HZ;
 
+
+        /// <summary>
+        /// Whether unlimited frame rate mode (no cap) should be enabled for the main thread.
+        /// </summary>
+        public bool UnlimitedFrameRate
+        {
+            get => unlimitedFrameRate;
+            set
+            {
+                unlimitedFrameRate = value;
+                updateMainThreadRates();
+            }
+        }
+
+        private bool unlimitedFrameRate;
+
         public double MaximumUpdateHz
         {
             set
@@ -226,8 +242,17 @@ namespace osu.Framework.Platform
             }
             else
             {
-                mainThread.ActiveHz = GameThread.DEFAULT_ACTIVE_HZ;
-                mainThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
+                // Use unlimited frame rate for main thread (InputThread) when enabled
+                if (UnlimitedFrameRate)
+                {
+                    mainThread.ActiveHz = double.MaxValue;
+                    mainThread.InactiveHz = double.MaxValue;
+                }
+                else
+                {
+                    mainThread.ActiveHz = GameThread.DEFAULT_ACTIVE_HZ;
+                    mainThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
+                }
             }
         }
 

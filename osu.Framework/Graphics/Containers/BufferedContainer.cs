@@ -13,6 +13,7 @@ using osu.Framework.Graphics.Shaders;
 using osu.Framework.Utils;
 using osu.Framework.Graphics.Sprites;
 using osu.Framework.Layout;
+using System;
 
 namespace osu.Framework.Graphics.Containers
 {
@@ -31,6 +32,11 @@ namespace osu.Framework.Graphics.Containers
         public BufferedContainer(RenderBufferFormat[] formats = null, bool pixelSnapping = false, bool cachedFrameBuffer = false)
             : base(formats, pixelSnapping, cachedFrameBuffer)
         {
+        }
+
+        public void GrayscaleTo(int v, double duration, Easing outPow10)
+        {
+            throw new NotImplementedException();
         }
     }
 

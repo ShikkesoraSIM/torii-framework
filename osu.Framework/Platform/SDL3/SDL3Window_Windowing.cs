@@ -10,6 +10,7 @@ using System.Drawing;
 using System.Linq;
 using osu.Framework.Bindables;
 using osu.Framework.Configuration;
+using osu.Framework.Graphics;
 using osu.Framework.Logging;
 using osuTK;
 using SDL;
@@ -24,7 +25,7 @@ namespace osu.Framework.Platform.SDL3
             config.BindWith(FrameworkSetting.MinimiseOnFocusLossInFullscreen, minimiseOnFocusLoss);
             minimiseOnFocusLoss.BindValueChanged(e =>
             {
-                ScheduleCommand(() => SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, e.NewValue ? "1"u8 : "0"u8));
+                ScheduleCommand(() => SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, e.NewValue ? "1"u8 : "0"u8).LogErrorIfFailed());
             }, true);
 
             fetchDisplays();
@@ -69,7 +70,7 @@ namespace osu.Framework.Platform.SDL3
                 if (min.Width > sizeWindowed.MaxValue.Width || min.Height > sizeWindowed.MaxValue.Height)
                     throw new InvalidOperationException($"Expected a size less than max window size ({sizeWindowed.MaxValue}), got {min}");
 
-                ScheduleCommand(() => SDL_SetWindowMinimumSize(SDLWindowHandle, min.Width, min.Height));
+                ScheduleCommand(() => SDL_SetWindowMinimumSize(SDLWindowHandle, min.Width, min.Height).LogErrorIfFailed());
             };
 
             sizeWindowed.MaxValueChanged += max =>
@@ -80,7 +81,7 @@ namespace osu.Framework.Platform.SDL3
                 if (max.Width < sizeWindowed.MinValue.Width || max.Height < sizeWindowed.MinValue.Height)
                     throw new InvalidOperationException($"Expected a size greater than min window size ({sizeWindowed.MinValue}), got {max}");
 
-                ScheduleCommand(() => SDL_SetWindowMaximumSize(SDLWindowHandle, max.Width, max.Height));
+                ScheduleCommand(() => SDL_SetWindowMaximumSize(SDLWindowHandle, max.Width, max.Height).LogErrorIfFailed());
             };
 
             config.BindWith(FrameworkSetting.SizeFullscreen, sizeFullscreen);
@@ -164,7 +165,7 @@ namespace osu.Framework.Platform.SDL3
             set
             {
                 position = value;
-                ScheduleCommand(() => SDL_SetWindowPosition(SDLWindowHandle, value.X, value.Y));
+                ScheduleCommand(() => SDL_SetWindowPosition(SDLWindowHandle, value.X, value.Y).LogErrorIfFailed());
             }
         }
 
@@ -182,7 +183,7 @@ namespace osu.Framework.Platform.SDL3
                     return;
 
                 resizable = value;
-                ScheduleCommand(() => SDL_SetWindowResizable(SDLWindowHandle, value));
+                ScheduleCommand(() => SDL_SetWindowResizable(SDLWindowHandle, value).LogErrorIfFailed());
             }
         }
 
@@ -244,9 +245,9 @@ namespace osu.Framework.Platform.SDL3
                 ScheduleCommand(() =>
                 {
                     if (value)
-                        SDL_ShowWindow(SDLWindowHandle);
+                        SDL_ShowWindow(SDLWindowHandle).LogErrorIfFailed();
                     else
-                        SDL_HideWindow(SDLWindowHandle);
+                        SDL_HideWindow(SDLWindowHandle).LogErrorIfFailed();
                 });
             }
         }
@@ -305,8 +306,18 @@ namespace osu.Framework.Platform.SDL3
         /// </remarks>
         private void fetchDisplays()
         {
-            Displays = getSDLDisplays();
-            DisplaysChanged?.Invoke(Displays);
+            var newDisplays = getSDLDisplays();
+
+            if (newDisplays.Length > 0)
+            {
+                Displays = newDisplays;
+                DisplaysChanged?.Invoke(newDisplays);
+            }
+            else
+            {
+                // keep Displays stale if zero displays are currently detected
+                Logger.Log("Got zero displays from SDL, ignoring.");
+            }
         }
 
         /// <summary>
@@ -360,6 +371,14 @@ namespace osu.Framework.Platform.SDL3
                 return false;
             }
 
+            SDL_Rect usableBounds;
+
+            if (!SDL_GetDisplayUsableBounds(displayID, &usableBounds))
+            {
+                Logger.Log($"Failed to get usable display bounds for display at index ({displayIndex}). Assuming whole display is usable. SDL Error: {SDL_GetError()}");
+                usableBounds = rect;
+            }
+
             DisplayMode[] displayModes = Array.Empty<DisplayMode>();
 
             if (RuntimeInfo.IsDesktop)
@@ -382,7 +401,11 @@ namespace osu.Framework.Platform.SDL3
                     displayModes[i] = modes[i].ToDisplayMode(displayIndex);
             }
 
-            display = new Display(displayIndex, SDL_GetDisplayName(displayID), new Rectangle(rect.x, rect.y, rect.w, rect.h), displayModes);
+            display = new Display(displayIndex,
+                SDL_GetDisplayName(displayID).LogErrorIfFailed(),
+                new Rectangle(rect.x, rect.y, rect.w, rect.h),
+                new Rectangle(usableBounds.x, usableBounds.y, usableBounds.w, usableBounds.h),
+                displayModes);
             return true;
         }
 
@@ -408,7 +431,7 @@ namespace osu.Framework.Platform.SDL3
             get
             {
                 SDL_Rect rect;
-                SDL_GetDisplayBounds(displayID, &rect);
+                SDL_GetDisplayBounds(displayID, &rect).LogErrorIfFailed();
                 return new Rectangle(rect.x, rect.y, rect.w, rect.h);
             }
         }
@@ -447,7 +470,7 @@ namespace osu.Framework.Platform.SDL3
         private unsafe void fetchWindowSize(bool storeToConfig = true)
         {
             int w, h;
-            SDL_GetWindowSize(SDLWindowHandle, &w, &h);
+            SDL_GetWindowSize(SDLWindowHandle, &w, &h).LogErrorIfFailed();
 
             int drawableW = graphicsSurface.GetDrawableSize().Width;
 
@@ -474,7 +497,7 @@ namespace osu.Framework.Platform.SDL3
                 case SDL_EventType.SDL_EVENT_WINDOW_MOVED:
                     // explicitly requery as there are occasions where what SDL has provided us with is not up-to-date.
                     int x, y;
-                    SDL_GetWindowPosition(SDLWindowHandle, &x, &y);
+                    SDL_GetWindowPosition(SDLWindowHandle, &x, &y).ThrowIfFailed();
                     var newPosition = new Point(x, y);
 
                     if (!newPosition.Equals(Position))
@@ -592,7 +615,7 @@ namespace osu.Framework.Platform.SDL3
                     windowMaximised = maximized;
             }
 
-            var newDisplayID = SDL_GetDisplayForWindow(SDLWindowHandle);
+            var newDisplayID = SDL_GetDisplayForWindow(SDLWindowHandle).ThrowIfFailed();
 
             if (displayID != newDisplayID)
             {
@@ -605,6 +628,42 @@ namespace osu.Framework.Platform.SDL3
 
                 CurrentDisplayBindable.Value = currentDisplay;
             }
+
+            if (tryGetBorderSize(out var borderSize))
+                BorderSize.Value = borderSize;
+        }
+
+        /// <summary>
+        /// Whether <see cref="SDL_GetWindowBordersSize"/> is supported on this platform.
+        /// </summary>
+        private bool? bordersSizeSupported;
+
+        private unsafe bool tryGetBorderSize(out MarginPadding borderSize)
+        {
+            if (bordersSizeSupported == false)
+            {
+                borderSize = default;
+                return false;
+            }
+
+            int top, left, bottom, right;
+
+            if (!SDL_GetWindowBordersSize(SDLWindowHandle, &top, &left, &bottom, &right))
+            {
+                bordersSizeSupported ??= SDL_GetError() != "That operation is not supported";
+                borderSize = default;
+                return false;
+            }
+
+            bordersSizeSupported = true;
+            borderSize = new MarginPadding
+            {
+                Top = top,
+                Left = left,
+                Bottom = bottom,
+                Right = right
+            };
+            return true;
         }
 
         private static bool tryGetDisplayIndex(SDL_DisplayID id, out int index)
@@ -623,7 +682,7 @@ namespace osu.Framework.Platform.SDL3
                 }
             }
 
-            index = default;
+            index = 0;
             return false;
         }
 
@@ -640,9 +699,9 @@ namespace osu.Framework.Platform.SDL3
                 case WindowState.Normal:
                     Size = sizeWindowed.Value;
 
-                    SDL_RestoreWindow(SDLWindowHandle);
-                    SDL_SetWindowSize(SDLWindowHandle, Size.Width, Size.Height);
-                    SDL_SetWindowResizable(SDLWindowHandle, Resizable);
+                    SDL_RestoreWindow(SDLWindowHandle).LogErrorIfFailed();
+                    SDL_SetWindowSize(SDLWindowHandle, Size.Width, Size.Height).LogErrorIfFailed();
+                    SDL_SetWindowResizable(SDLWindowHandle, Resizable).LogErrorIfFailed();
 
                     readWindowPositionFromConfig(state, display);
                     break;
@@ -654,8 +713,8 @@ namespace osu.Framework.Platform.SDL3
 
                     ensureWindowOnDisplay(display);
 
-                    SDL_SetWindowFullscreenMode(SDLWindowHandle, &closestMode);
-                    SDL_SetWindowFullscreen(SDLWindowHandle, true);
+                    SDL_SetWindowFullscreenMode(SDLWindowHandle, &closestMode).LogErrorIfFailed();
+                    SDL_SetWindowFullscreen(SDLWindowHandle, true).LogErrorIfFailed();
                     break;
 
                 case WindowState.FullscreenBorderless:
@@ -663,16 +722,16 @@ namespace osu.Framework.Platform.SDL3
                     break;
 
                 case WindowState.Maximised:
-                    SDL_RestoreWindow(SDLWindowHandle);
+                    SDL_RestoreWindow(SDLWindowHandle).LogErrorIfFailed();
 
                     ensureWindowOnDisplay(display);
 
-                    SDL_MaximizeWindow(SDLWindowHandle);
+                    SDL_MaximizeWindow(SDLWindowHandle).LogErrorIfFailed();
                     break;
 
                 case WindowState.Minimised:
                     ensureWindowOnDisplay(display);
-                    SDL_MinimizeWindow(SDLWindowHandle);
+                    SDL_MinimizeWindow(SDLWindowHandle).LogErrorIfFailed();
                     break;
             }
         }
@@ -685,7 +744,8 @@ namespace osu.Framework.Platform.SDL3
                 return false;
             }
 
-            var mode = windowState == WindowState.Fullscreen ? SDL_GetWindowFullscreenMode(windowHandle) : SDL_GetDesktopDisplayMode(displayID);
+            SDL_ClearError();
+            var mode = windowState == WindowState.Fullscreen ? SDL_GetWindowFullscreenMode(windowHandle) : SDL3Extensions.LogErrorIfFailed(SDL_GetDesktopDisplayMode(displayID));
             string type = windowState == WindowState.Fullscreen ? "fullscreen" : "desktop";
 
             if (mode != null)
@@ -710,7 +770,7 @@ namespace osu.Framework.Platform.SDL3
                 return true;
             }
 
-            maximized = default;
+            maximized = false;
             return false;
         }
 
@@ -732,7 +792,7 @@ namespace osu.Framework.Platform.SDL3
         {
             if (tryGetDisplayAtIndex(display.Index, out var requestedID))
             {
-                if (requestedID == SDL_GetDisplayForWindow(SDLWindowHandle))
+                if (requestedID == SDL_GetDisplayForWindow(SDLWindowHandle).LogErrorIfFailed())
                     return;
             }
 
@@ -808,8 +868,8 @@ namespace osu.Framework.Platform.SDL3
             ensureWindowOnDisplay(display);
 
             // this is a generally sane method of handling borderless, and works well on macOS and linux.
-            SDL_SetWindowFullscreenMode(SDLWindowHandle, null);
-            SDL_SetWindowFullscreen(SDLWindowHandle, true);
+            SDL_SetWindowFullscreenMode(SDLWindowHandle, null).LogErrorIfFailed();
+            SDL_SetWindowFullscreen(SDLWindowHandle, true).LogErrorIfFailed();
 
             return display.Bounds.Size;
         }

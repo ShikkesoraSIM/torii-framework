@@ -19,6 +19,7 @@ using osu.Framework.Audio.Mixing.Bass;
 using osu.Framework.Audio.Sample;
 using osu.Framework.Audio.Track;
 using osu.Framework.Bindables;
+using osu.Framework.Configuration;
 using osu.Framework.Development;
 using osu.Framework.Extensions.TypeExtensions;
 using osu.Framework.IO.Stores;
@@ -266,11 +267,20 @@ namespace osu.Framework.Audio
         /// <param name="audioThread">The host's audio thread.</param>
         /// <param name="trackStore">The resource store containing all audio tracks to be used in the future.</param>
         /// <param name="sampleStore">The sample store containing all audio samples to be used in the future.</param>
-        public AudioManager(AudioThread audioThread, ResourceStore<byte[]> trackStore, ResourceStore<byte[]> sampleStore)
+        /// <param name="config">Optional framework config manager used to bind audio settings.</param>
+        public AudioManager(AudioThread audioThread, ResourceStore<byte[]> trackStore, ResourceStore<byte[]> sampleStore, FrameworkConfigManager config = null)
         {
             thread = audioThread;
 
             thread.RegisterManager(this);
+
+            if (config != null)
+            {
+                config.BindWith(FrameworkSetting.AudioDevice, AudioDevice);
+                config.BindWith(FrameworkSetting.VolumeUniversal, Volume);
+                config.BindWith(FrameworkSetting.VolumeEffect, VolumeSample);
+                config.BindWith(FrameworkSetting.VolumeMusic, VolumeTrack);
+            }
 
             AudioDevice.ValueChanged += _ => onDeviceChanged();
             AudioDeviceBufferLength.ValueChanged += _ => applyAudioSettings();

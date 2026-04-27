@@ -46,6 +46,7 @@ namespace osu.Framework.Configuration
             SetDefault(FrameworkSetting.ShowUnicode, false);
             SetDefault(FrameworkSetting.Locale, string.Empty);
             SetDefault(FrameworkSetting.LatencyMode, LatencyMode.Off);
+            SetDefault(FrameworkSetting.AllowDangerousUnlimitedNoCap, false);
 
 #pragma warning disable 618
             SetDefault(FrameworkSetting.MapAbsoluteInputToWindow, false);
@@ -104,6 +105,7 @@ namespace osu.Framework.Configuration
         Renderer,
         WindowMode,
         LatencyMode,
+        AllowDangerousUnlimitedNoCap,
         ConfineMouseMode,
         FrameSync,
         ExecutionMode,

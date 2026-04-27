@@ -36,6 +36,21 @@ namespace osu.Framework.Platform
 
         private double maximumUpdateHz = GameThread.DEFAULT_ACTIVE_HZ;
 
+        private double? mainThreadActiveHzOverride;
+
+        /// <summary>
+        /// Overrides the active rate used by the main/input thread while running multi-threaded.
+        /// This allows games to keep draw fully uncapped without accidentally running input/audio scheduling unbounded.
+        /// </summary>
+        public double? MainThreadActiveHzOverride
+        {
+            get => mainThreadActiveHzOverride;
+            set
+            {
+                mainThreadActiveHzOverride = value;
+                updateMainThreadRates();
+            }
+        }
 
         /// <summary>
         /// Whether unlimited frame rate mode (no cap) should be enabled for the main thread.
@@ -247,6 +262,11 @@ namespace osu.Framework.Platform
                 {
                     mainThread.ActiveHz = double.MaxValue;
                     mainThread.InactiveHz = double.MaxValue;
+                }
+                else if (MainThreadActiveHzOverride.HasValue)
+                {
+                    mainThread.ActiveHz = MainThreadActiveHzOverride.Value;
+                    mainThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
                 }
                 else
                 {

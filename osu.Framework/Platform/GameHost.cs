@@ -1245,6 +1245,8 @@ namespace osu.Framework.Platform
 
         private Bindable<LatencyMode> latencyMode;
 
+        private Bindable<bool> allowDangerousUnlimitedNoCap;
+
         private IBindable<DisplayMode> currentDisplayMode;
 
         private Bindable<string> ignoredInputHandlers;
@@ -1285,6 +1287,9 @@ namespace osu.Framework.Platform
 
             latencyMode = Config.GetBindable<LatencyMode>(FrameworkSetting.LatencyMode) ?? new Bindable<LatencyMode>(LatencyMode.Off);
             latencyMode.BindValueChanged(mode => setLowLatencyMode(mode.NewValue), true);
+
+            allowDangerousUnlimitedNoCap = Config.GetBindable<bool>(FrameworkSetting.AllowDangerousUnlimitedNoCap);
+            allowDangerousUnlimitedNoCap.BindValueChanged(_ => updateFrameSyncMode(), true);
 
 #pragma warning disable 618
             // pragma region can be removed 20210911
@@ -1362,34 +1367,33 @@ namespace osu.Framework.Platform
         /// and (more) stutter-free.
         /// </summary>
         private const int maximum_sane_fps = GameThread.DEFAULT_ACTIVE_HZ;
+        private const int maximum_unlimited_update_hz = 2000;
+
+        // Torii competitive defaults: input/audio capped at 2000hz, update at 4000hz when fully uncapped.
+        private const int torii_input_audio_hz = 2000;
+        private const int torii_update_hz = 4000;
 
         private void updateFrameSyncMode()
         {
-            // Set AudioThread and InputThread frame rates (can be done without window)
+            bool useDangerousNoCap = frameSyncMode?.Value == FrameSync.UnlimitedNoCap && allowDangerousUnlimitedNoCap?.Value == true;
+
+            // Set AudioThread and InputThread frame rates (can be done without window).
+            // Torii: always cap input/audio at torii_input_audio_hz (2000hz) regardless of frame sync
+            // mode, unless the user explicitly opted into fully unbounded scheduling.
             if (AudioThread != null && InputThread != null)
             {
-                if (frameSyncMode?.Value == FrameSync.UnlimitedNoCap)
-                {
-                    AudioThread.ActiveHz = double.MaxValue;
-                    AudioThread.InactiveHz = double.MaxValue;
-                    InputThread.ActiveHz = double.MaxValue;
-                    InputThread.InactiveHz = double.MaxValue;
+                AudioThread.ActiveHz = useDangerousNoCap ? double.MaxValue : torii_input_audio_hz;
+                AudioThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
+                InputThread.ActiveHz = useDangerousNoCap ? double.MaxValue : torii_input_audio_hz;
+                InputThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
 
-                    // Enable unlimited frame rate for ThreadRunner (affects InputThread)
-                    if (threadRunner != null)
-                        threadRunner.UnlimitedFrameRate = true;
-                }
-                else
+                if (threadRunner != null)
                 {
-                    // Reset to default for other modes
-                    AudioThread.ActiveHz = GameThread.DEFAULT_ACTIVE_HZ;
-                    AudioThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
-                    InputThread.ActiveHz = GameThread.DEFAULT_ACTIVE_HZ;
-                    InputThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
-
-                    // Disable unlimited frame rate for ThreadRunner
-                    if (threadRunner != null)
-                        threadRunner.UnlimitedFrameRate = false;
+                    // UnlimitedFrameRate = true only when the user explicitly enabled the "I am stupid" toggle.
+                    threadRunner.UnlimitedFrameRate = useDangerousNoCap;
+                    // Keep the main/input thread on the window loop at 2000hz in multi-threaded mode,
+                    // matching the InputThread cap above. (Without this, ThreadRunner falls back to 1000hz.)
+                    threadRunner.MainThreadActiveHzOverride = useDangerousNoCap ? null : torii_input_audio_hz;
                 }
             }
 
@@ -1440,8 +1444,8 @@ namespace osu.Framework.Platform
 
                 case FrameSync.UnlimitedNoCap:
                     drawLimiter = double.MaxValue;
-                    updateLimiter = double.MaxValue;
-                    AllowBenchmarkUnlimitedFrames = true;
+                    updateLimiter = useDangerousNoCap ? double.MaxValue : torii_update_hz;
+                    AllowBenchmarkUnlimitedFrames = useDangerousNoCap;
                     break;
             }
 
@@ -1455,10 +1459,11 @@ namespace osu.Framework.Platform
 
             if (frameSyncMode.Value == FrameSync.UnlimitedNoCap)
             {
-                // For UnlimitedNoCap, allow both draw and update to be truly unlimited
-                // This removes the 1000fps cap from both audio/input and rendering
+                // By default this is only draw-unlimited. The update thread is capped at torii_update_hz
+                // (4000hz) to avoid starving audio scheduling. Fully unbounded scheduling is reserved
+                // for the explicit "I am stupid" override.
                 drawLimiter = double.MaxValue;
-                updateLimiter = double.MaxValue;
+                updateLimiter = useDangerousNoCap ? double.MaxValue : torii_update_hz;
             }
             else if (!AllowBenchmarkUnlimitedFrames)
             {

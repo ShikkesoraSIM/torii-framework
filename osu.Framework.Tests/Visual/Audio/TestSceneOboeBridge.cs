@@ -140,7 +140,7 @@ namespace osu.Framework.Tests.Visual.Audio
         [MethodImpl(MethodImplOptions.NoInlining)]
         private void startOboeBridge(IntPtr provider, Action<int>? onStarted = null)
         {
-            int hardwareSampleRate = 48000;  // hardcoded for the test scene; production code reads from Oboe stream after Start()
+            int hardwareSampleRate = 48000;  // Ideally we should fetch the device native rate (AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE on Android), but that's Android-specific so the framework test scene just uses a fixed value. sry
 
             nativeBridges ??= new OboeBridgeManager();
 

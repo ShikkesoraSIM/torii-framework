@@ -45,6 +45,12 @@ namespace osu.Framework.Platform.Windows
                     break;
 
                 case GraphicsSurfaceType.Direct3D11:
+                case GraphicsSurfaceType.Direct3D12:
+                    // D3D11 and D3D12 both use flip-model swapchains via DXGI
+                    // on the raw HWND, so the borderless fullscreen
+                    // workaround that OpenGL/Vulkan need (extra pixel column
+                    // to dodge auto-exclusive-fullscreen on certain drivers)
+                    // doesn't apply.
                     applyBorderlessWindowHack = false;
                     break;
             }

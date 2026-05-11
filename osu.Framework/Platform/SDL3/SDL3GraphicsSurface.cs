@@ -44,6 +44,14 @@ namespace osu.Framework.Platform.SDL3
                 case GraphicsSurfaceType.Vulkan:
                 case GraphicsSurfaceType.Metal:
                 case GraphicsSurfaceType.Direct3D11:
+                case GraphicsSurfaceType.Direct3D12:
+                    // D3D11/D3D12: SDL doesn't need any per-attribute hint on
+                    // these — the swapchain is built directly against the
+                    // HWND by the Veldrid backend (D3D11Swapchain /
+                    // D3D12Swapchain). Same null branch as the existing
+                    // surface types above; the only thing the framework
+                    // owes Veldrid here is a window with a valid HWND, which
+                    // SDL3 already provides regardless of surface type.
                     break;
 
                 default:

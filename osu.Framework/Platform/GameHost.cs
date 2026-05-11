@@ -878,6 +878,8 @@ namespace osu.Framework.Platform
                 case RuntimeInfo.Platform.Windows:
                     yield return RendererType.Direct3D11;
                     yield return RendererType.Deferred_Direct3D11;
+                    yield return RendererType.Direct3D12;
+                    yield return RendererType.Deferred_Direct3D12;
                     yield return RendererType.OpenGL;
                     yield return RendererType.Deferred_Vulkan;
 
@@ -956,6 +958,7 @@ namespace osu.Framework.Platform
                         case RendererType.Deferred_Metal:
                         case RendererType.Deferred_Vulkan:
                         case RendererType.Deferred_Direct3D11:
+                        case RendererType.Deferred_Direct3D12:
                         case RendererType.Deferred_OpenGL:
                             SetupRendererAndWindow(new DeferredRenderer(), rendererToGraphicsSurfaceType(type));
                             break;
@@ -968,8 +971,17 @@ namespace osu.Framework.Platform
                     ResolvedRenderer = type;
                     return;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    // Always log the inner exception so D3D12 (or any other
+                    // experimental backend) init failures don't disappear
+                    // into the void. Without this the only user-visible
+                    // signal is a generic "failed to initialise" toast,
+                    // which makes diagnosing the actual cause (driver
+                    // version, validation layer, missing feature level,
+                    // etc) impossible from a release log.
+                    Logger.Error(ex, $"Renderer attempt for {type} threw during initialisation.");
+
                     if (configRenderer.Value != RendererType.Automatic)
                     {
                         // If we fail, assume the user may have had a custom setting and switch it back to automatic.
@@ -1002,6 +1014,11 @@ namespace osu.Framework.Platform
                 case RendererType.Deferred_Direct3D11:
                 case RendererType.Direct3D11:
                     surface = GraphicsSurfaceType.Direct3D11;
+                    break;
+
+                case RendererType.Deferred_Direct3D12:
+                case RendererType.Direct3D12:
+                    surface = GraphicsSurfaceType.Direct3D12;
                     break;
 
                 case RendererType.Deferred_OpenGL:
@@ -1507,6 +1524,18 @@ namespace osu.Framework.Platform
         {
             if (lowLatencyInitialized || direct3D11LowLatency is NoOpDirect3D11LowLatencyProvider) return;
             if (Renderer is not IVeldridRenderer veldridRenderer || !Renderer.IsInitialised) return;
+
+            // The current low-latency surface (NVAPI Reflex, AMD Anti-Lag 2)
+            // is bound to D3D11 — GetD3D11Info() will throw on any other
+            // backend. On D3D12 / Vulkan / Metal we simply skip without a
+            // visible "Failed..." toast (it would otherwise pop on every
+            // Torii Nova D3D12 first-launch, which is just noise — there
+            // is no D3D12 Reflex path wired up yet).
+            if (veldridRenderer.Device.BackendType != Veldrid.GraphicsBackend.Direct3D11)
+            {
+                Logger.Log($"Low latency provider skipped: backend is {veldridRenderer.Device.BackendType}, current provider is D3D11-only.");
+                return;
+            }
 
             try
             {

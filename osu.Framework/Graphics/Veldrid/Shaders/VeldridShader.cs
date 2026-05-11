@@ -146,6 +146,11 @@ namespace osu.Framework.Graphics.Veldrid.Shaders
                         {
                             GraphicsSurfaceType.Metal => CrossCompileTarget.MSL,
                             GraphicsSurfaceType.Direct3D11 => CrossCompileTarget.HLSL,
+                            // D3D12 consumes HLSL bytecode the same way D3D11
+                            // does — Vortice.D3DCompiler produces DXBC that
+                            // both runtimes load. Cross-compile to the same
+                            // target.
+                            GraphicsSurfaceType.Direct3D12 => CrossCompileTarget.HLSL,
                             _ => throw new InvalidOperationException($"Unsupported surface type: {renderer.SurfaceType}.")
                         };
 

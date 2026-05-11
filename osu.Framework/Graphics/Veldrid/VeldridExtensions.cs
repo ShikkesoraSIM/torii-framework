@@ -363,6 +363,20 @@ namespace osu.Framework.Graphics.Veldrid
                         Direct3D 11 Shared System Memory:    {dxgiAdapter.Description.SharedSystemMemory / 1024 / 1024} MB");
         }
 
+        public static void LogD3D12(this GraphicsDevice device, out int maxTextureSize)
+        {
+            Debug.Assert(device.BackendType == GraphicsBackend.Direct3D12);
+
+            // D3D12 spec: max 2D texture dimension at Feature Level 11_0+ is 16384.
+            // Higher tiers exist but Veldrid currently targets FL11_0 minimum.
+            maxTextureSize = 16384;
+
+            Logger.Log($@"Direct3D 12 Initialized (Torii Nova)
+                        Direct3D 12 Adapter:                 {device.DeviceName}
+                        Direct3D 12 Vendor:                  {device.VendorName}
+                        Direct3D 12 API Version:             {device.ApiVersion}");
+        }
+
         public static unsafe void LogOpenGL(this GraphicsDevice device, out int maxTextureSize)
         {
             var info = device.GetOpenGLInfo();

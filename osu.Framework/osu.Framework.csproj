@@ -27,7 +27,8 @@
   <PackageReference Include="ManagedBass.Wasapi" Version="4.0.1" />
   <PackageReference Include="ManagedBass" Version="4.0.1" />
   <PackageReference Include="ManagedBass.Asio" Version="4.0.1" />
-    <PackageReference Include="ppy.Veldrid" Version="4.9.69-ga405fe8484" />
+    <!-- Torii.Veldrid = ppy.Veldrid fork with Direct3D 12 backend (Torii Nova). Source: ../torii-veldrid feat/d3d12. -->
+    <PackageReference Include="Torii.Veldrid" Version="4.9.90-gf70cdd24d3" />
     <PackageReference Include="ppy.Veldrid.SPIRV" Version="1.0.15-g5911265ec3" />
     <PackageReference Include="SharpFNT" Version="2.0.0" />
     <!-- Preview version of ImageSharp causes NU5104. -->

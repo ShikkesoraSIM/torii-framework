@@ -205,6 +205,11 @@ namespace osu.Framework.Graphics.Veldrid
                     Device.LogD3D11(out maxTextureSize);
                     break;
 
+                case GraphicsSurfaceType.Direct3D12:
+                    Device = GraphicsDevice.CreateD3D12(options, swapchain);
+                    Device.LogD3D12(out maxTextureSize);
+                    break;
+
                 case GraphicsSurfaceType.Metal:
                     Device = GraphicsDevice.CreateMetal(options, swapchain);
                     Device.LogMetal(out maxTextureSize);

@@ -24,6 +24,9 @@ namespace osu.Framework.Configuration
         [Description("Direct3D 11")]
         Direct3D11,
 
+        [Description("Direct3D 12")]
+        Direct3D12,
+
         /// <summary>
         /// Uses <see cref="GLRenderer"/>.
         /// </summary>
@@ -43,6 +46,9 @@ namespace osu.Framework.Configuration
 
         [Description("Direct3D 11 (Experimental)")]
         Deferred_Direct3D11,
+
+        [Description("Direct3D 12 (Experimental)")]
+        Deferred_Direct3D12,
 
         [Description("OpenGL (Experimental)")]
         Deferred_OpenGL

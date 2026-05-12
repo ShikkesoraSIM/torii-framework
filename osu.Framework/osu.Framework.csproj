@@ -49,8 +49,12 @@
       If ASIO needs to return as a feature later, a ppy.ManagedBass.Asio
       fork would have to be produced first.
     -->
-    <!-- Torii.Veldrid = ppy.Veldrid fork with Direct3D 12 backend (Torii Nova). Source: ../torii-veldrid feat/d3d12. -->
-    <PackageReference Include="Torii.Veldrid" Version="4.9.119-ge2e34deb4d" />
+    <!-- Torii.Veldrid = ppy.Veldrid fork with Direct3D 12 backend (Torii Nova).
+         Source: ../torii-veldrid feat/d3d12. CI builds + packs this from the
+         sibling checkout (see build-gu.yml VELDRID_REF env var) and the
+         local NuGet source `torii-veldrid-local` in nuget.config picks it
+         up from `../torii-veldrid/bin/Packages/Release`. -->
+    <PackageReference Include="Torii.Veldrid" Version="4.9.120-g99a6ad4a0c" />
     <PackageReference Include="ppy.Veldrid.SPIRV" Version="1.0.15-g5911265ec3" />
     <PackageReference Include="SharpFNT" Version="2.0.0" />
     <!-- Preview version of ImageSharp causes NU5104. -->

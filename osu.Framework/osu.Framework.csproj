@@ -19,16 +19,38 @@
     <PackageTags>osu game framework</PackageTags>
   </PropertyGroup>
   <ItemGroup Label="Package References">
-    <PackageReference Include="managed-midi" Version="1.10.1" />
+    <!--
+      Audio + MIDI: switched from vanilla ManagedBass / managed-midi to ppy's
+      maintained forks (ppy.ManagedBass*, ppy.managed-midi) to inherit the
+      audio fixes the upstream osu! repo ships with — WASAPI exclusive-mode
+      bug fixes, audio device hot-plug handling, ASIO callback safety, and
+      midi backend patches. The version numbers look "older" than the
+      vanilla 4.0.1 line because ppy's branch is based on the pre-4.x trunk;
+      do NOT swap them back to vanilla on a "newer is better" hunch — vanilla
+      4.x is missing those patches.
+    -->
+    <PackageReference Include="ppy.managed-midi" Version="1.10.2" />
     <PackageReference Include="FFmpeg.AutoGen" Version="4.3.0.1" />
     <PackageReference Include="Microsoft.Extensions.ObjectPool" Version="5.0.11" />
-  <PackageReference Include="ManagedBass.Fx" Version="4.0.1" />
-  <PackageReference Include="ManagedBass.Mix" Version="4.0.1" />
-  <PackageReference Include="ManagedBass.Wasapi" Version="4.0.1" />
-  <PackageReference Include="ManagedBass" Version="4.0.1" />
-  <PackageReference Include="ManagedBass.Asio" Version="4.0.1" />
+    <PackageReference Include="ppy.ManagedBass" Version="2022.1216.0" />
+    <PackageReference Include="ppy.ManagedBass.Fx" Version="2022.1216.0" />
+    <PackageReference Include="ppy.ManagedBass.Mix" Version="2022.1216.0" />
+    <PackageReference Include="ppy.ManagedBass.Wasapi" Version="2022.1216.0" />
+    <!--
+      ASIO support was dropped during the May 2026 ppy-audio switch.
+      Reason: `ManagedBass.Asio 4.0.1` (vanilla) carries `ManagedBass 4.0.1`
+      as a transitive dependency. ppy's ManagedBass fork ships a
+      same-named `ManagedBass.dll` but at version 2022.1216.0 with
+      different public API surface in some namespaces (`PositionFlags`,
+      `PlaybackState`, etc.), so having both on the project causes
+      CS0433 "type exists in both" compile errors. The `AsioDeviceManager`
+      class was dead code (no callers in osu-framework or osu! Game) so
+      removing the package + file has zero runtime impact for users.
+      If ASIO needs to return as a feature later, a ppy.ManagedBass.Asio
+      fork would have to be produced first.
+    -->
     <!-- Torii.Veldrid = ppy.Veldrid fork with Direct3D 12 backend (Torii Nova). Source: ../torii-veldrid feat/d3d12. -->
-    <PackageReference Include="Torii.Veldrid" Version="4.9.90-gf70cdd24d3" />
+    <PackageReference Include="Torii.Veldrid" Version="4.9.119-ge2e34deb4d" />
     <PackageReference Include="ppy.Veldrid.SPIRV" Version="1.0.15-g5911265ec3" />
     <PackageReference Include="SharpFNT" Version="2.0.0" />
     <!-- Preview version of ImageSharp causes NU5104. -->
@@ -41,7 +63,7 @@
     <PackageReference Include="StbiSharp" Version="1.1.0" />
     <PackageReference Include="ppy.SDL2-CS" Version="1.0.741-alpha" />
     <PackageReference Include="ppy.SDL3-CS" Version="2026.302.0" />
-    <PackageReference Include="ppy.osu.Framework.SourceGeneration" Version="2024.1128.0" />
+    <PackageReference Include="ppy.osu.Framework.SourceGeneration" Version="2025.1121.1" />
 
     <!-- DO NOT use ProjectReference for native packaging project.
          See https://github.com/NuGet/Home/issues/4514 and https://github.com/dotnet/sdk/issues/765 . -->

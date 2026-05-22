@@ -1308,6 +1308,14 @@ namespace osu.Framework.Platform
             allowDangerousUnlimitedNoCap = Config.GetBindable<bool>(FrameworkSetting.AllowDangerousUnlimitedNoCap);
             allowDangerousUnlimitedNoCap.BindValueChanged(_ => updateFrameSyncMode(), true);
 
+            // Re-evaluate input / audio / update rates whenever the game
+            // side flips ToriiInputAudioHz. updateFrameSyncMode already
+            // reads the current bindable Value so we just need to retrigger
+            // it. No immediate-fire (true) — the initial pass already runs
+            // via the allowDangerousUnlimitedNoCap subscription above, so
+            // firing twice on startup would just push identical rates.
+            ToriiInputAudioHz.BindValueChanged(_ => updateFrameSyncMode());
+
 #pragma warning disable 618
             // pragma region can be removed 20210911
             ignoredInputHandlers = Config.GetBindable<string>(FrameworkSetting.IgnoredInputHandlers);
@@ -1385,48 +1393,46 @@ namespace osu.Framework.Platform
         /// </summary>
         private const int maximum_sane_fps = GameThread.DEFAULT_ACTIVE_HZ;
 
-        // Single competitive default for Torii's tuned defaults. Input poll,
-        // audio scheduling AND update tick all run at this rate in unlimited
-        // modes (Unlimited / UnlimitedNoCap), matching the rate at which
-        // input arrives from the OS. 2000hz matches modern high-end mouse
-        // polling and gives the update thread 500µs per tick — comfortable
-        // headroom over the ~100-400µs cost of a typical osu! Update().
+        // User-configurable rate (Hz) for input + audio + update threads.
+        // The game-facing dropdown lives in Settings → Graphics → Renderer
+        // ("Input/audio thread rate"); OsuGameBase.SetHost wires the saved
+        // preference into this bindable, and any change re-triggers
+        // updateFrameSyncMode via the BindValueChanged subscription in
+        // SetupConfig above. 2000 Hz is Torii's historical competitive
+        // default — high enough for tight latency on capable desktops,
+        // low enough that mainstream machines aren't thermally hammered.
+        // Users on weak hardware can drop to 500 / 1000; capable rigs can
+        // push 4000 / 8000.
         //
-        // The previous tuning ran update at 4000hz (250µs/tick budget) which
-        // caused two problems:
-        //   1. Half the ticks fired without a new input event to consume
-        //      (input is capped at 2000hz upstream), so 50% of allocations
-        //      and bindable-changed cascades were wasted work feeding into
-        //      Gen0/Gen1 GC pressure.
-        //   2. Tight budget meant frames that allocated above the average
-        //      (e.g. a HitObject pool refill at the start of a beatmap)
-        //      overflowed the slot and produced jitter on the update clock.
-        // 2000hz across the pipeline is the simplest model that "makes
-        // sense": each update consumes one input + audio sample with a
-        // tick of headroom, no rate is faster than what feeds it.
-        private const int torii_competitive_hz = 2000;
+        // The update thread cap is also unified to this value (running
+        // update faster than input/audio is wasted work — every extra
+        // tick processes the same input events). "I am stupid" mode
+        // (UnlimitedNoCap + AllowDangerousUnlimitedNoCap) bypasses this
+        // unification and runs everything fully uncapped.
+        public readonly BindableInt ToriiInputAudioHz = new BindableInt(2000);
 
         private void updateFrameSyncMode()
         {
             bool useDangerousNoCap = frameSyncMode?.Value == FrameSync.UnlimitedNoCap && allowDangerousUnlimitedNoCap?.Value == true;
 
             // Set AudioThread and InputThread frame rates (can be done without window).
-            // Torii: always cap input/audio at torii_competitive_hz (2000hz) regardless of frame sync
-            // mode, unless the user explicitly opted into fully unbounded scheduling.
+            // Torii: always cap input/audio at ToriiInputAudioHz.Value (user-pickable, default 2000hz)
+            // regardless of frame sync mode, unless the user explicitly opted into fully unbounded
+            // scheduling via "I am stupid" mode.
             if (AudioThread != null && InputThread != null)
             {
-                AudioThread.ActiveHz = useDangerousNoCap ? double.MaxValue : torii_competitive_hz;
+                AudioThread.ActiveHz = useDangerousNoCap ? double.MaxValue : ToriiInputAudioHz.Value;
                 AudioThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
-                InputThread.ActiveHz = useDangerousNoCap ? double.MaxValue : torii_competitive_hz;
+                InputThread.ActiveHz = useDangerousNoCap ? double.MaxValue : ToriiInputAudioHz.Value;
                 InputThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
 
                 if (threadRunner != null)
                 {
                     // UnlimitedFrameRate = true only when the user explicitly enabled the "I am stupid" toggle.
                     threadRunner.UnlimitedFrameRate = useDangerousNoCap;
-                    // Keep the main/input thread on the window loop at 2000hz in multi-threaded mode,
-                    // matching the InputThread cap above. (Without this, ThreadRunner falls back to 1000hz.)
-                    threadRunner.MainThreadActiveHzOverride = useDangerousNoCap ? null : torii_competitive_hz;
+                    // Keep the main/input thread on the window loop at ToriiInputAudioHz in multi-threaded
+                    // mode, matching the InputThread cap above. (Without this, ThreadRunner falls back to 1000hz.)
+                    threadRunner.MainThreadActiveHzOverride = useDangerousNoCap ? null : ToriiInputAudioHz.Value;
                 }
             }
 
@@ -1474,11 +1480,11 @@ namespace osu.Framework.Platform
                     // "Basically unlimited" in the UI. Draw runs at refresh
                     // rate (clamped below by maximum_sane_fps) since there
                     // is no value rendering frames the monitor can't show.
-                    // Update runs at torii_competitive_hz (2000hz) — above
-                    // the sane-fps cap, but bypassed by the dedicated
-                    // post-switch branch for this mode (see below).
+                    // Update runs at ToriiInputAudioHz — above the sane-fps
+                    // cap, but bypassed by the dedicated post-switch branch
+                    // for this mode (see below).
                     drawLimiter = double.MaxValue;
-                    updateLimiter = torii_competitive_hz;
+                    updateLimiter = ToriiInputAudioHz.Value;
                     break;
 
                 case FrameSync.UnlimitedNoCap:
@@ -1488,20 +1494,20 @@ namespace osu.Framework.Platform
                     // competitive rate so we don't burn cycles on ticks
                     // without a new input event to consume.
                     drawLimiter = double.MaxValue;
-                    updateLimiter = useDangerousNoCap ? double.MaxValue : torii_competitive_hz;
+                    updateLimiter = useDangerousNoCap ? double.MaxValue : ToriiInputAudioHz.Value;
                     AllowBenchmarkUnlimitedFrames = useDangerousNoCap;
                     break;
             }
 
             // If low latency is enabled, we want to limit the draw thread to refresh rate as anything above is unnecessary.
-            // Update thread runs at torii_competitive_hz (matching input/audio); the sane-fps clamp
+            // Update thread runs at ToriiInputAudioHz (matching input/audio); the sane-fps clamp
             // bypass below also covers the Unlimited / UnlimitedNoCap modes.
             if (lowLatencyInitialized && latencyMode.Value != LatencyMode.Off
                 && frameSyncMode.Value != FrameSync.UnlimitedNoCap
                 && frameSyncMode.Value != FrameSync.Unlimited)
             {
                 drawLimiter = refreshRate;
-                updateLimiter = torii_competitive_hz;
+                updateLimiter = ToriiInputAudioHz.Value;
             }
 
             if (frameSyncMode.Value == FrameSync.UnlimitedNoCap)
@@ -1510,16 +1516,16 @@ namespace osu.Framework.Platform
                 // so the loop matches the input/audio rate (no half-empty ticks). Fully unbounded
                 // scheduling is reserved for the explicit "I am stupid" override.
                 drawLimiter = double.MaxValue;
-                updateLimiter = useDangerousNoCap ? double.MaxValue : torii_competitive_hz;
+                updateLimiter = useDangerousNoCap ? double.MaxValue : ToriiInputAudioHz.Value;
             }
             else if (frameSyncMode.Value == FrameSync.Unlimited)
             {
                 // Bypass the sane-fps clamp for update only. Draw is still clamped to
                 // maximum_sane_fps via the standard path (so we don't render frames the
-                // monitor can't show); update runs at torii_competitive_hz, which is
+                // monitor can't show); update runs at ToriiInputAudioHz, which is
                 // intentionally above the legacy 1000hz sane cap.
                 drawLimiter = Math.Min((double)maximum_sane_fps, drawLimiter);
-                updateLimiter = torii_competitive_hz;
+                updateLimiter = ToriiInputAudioHz.Value;
             }
             else if (!AllowBenchmarkUnlimitedFrames)
             {

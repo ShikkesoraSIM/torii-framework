@@ -1264,6 +1264,19 @@ namespace osu.Framework.Platform
 
         private Bindable<bool> allowDangerousUnlimitedNoCap;
 
+        /// <summary>
+        /// Torii: input/audio/update thread rate (Hz). Driven by the in-game
+        /// "Input/audio thread rate" setting — OsuGameBase wires it from
+        /// OsuSetting.ToriiInputAudioHz into this bindable. updateFrameSyncMode
+        /// reads it as the single source of truth, falling back to the historical
+        /// 2000 default when unset (e.g. headless).
+        /// </summary>
+        public BindableInt ToriiInputAudioHz { get; } = new BindableInt(default_competitive_hz)
+        {
+            MinValue = 250,
+            MaxValue = 16000,
+        };
+
         private IBindable<DisplayMode> currentDisplayMode;
 
         private Bindable<string> ignoredInputHandlers;
@@ -1307,6 +1320,10 @@ namespace osu.Framework.Platform
 
             allowDangerousUnlimitedNoCap = Config.GetBindable<bool>(FrameworkSetting.AllowDangerousUnlimitedNoCap);
             allowDangerousUnlimitedNoCap.BindValueChanged(_ => updateFrameSyncMode(), true);
+
+            // Torii: re-evaluate frame-sync rates whenever the input/audio thread
+            // Hz changes (OsuGameBase sets this from OsuSetting.ToriiInputAudioHz).
+            ToriiInputAudioHz.BindValueChanged(_ => updateFrameSyncMode(), true);
 
 #pragma warning disable 618
             // pragma region can be removed 20210911
@@ -1404,11 +1421,19 @@ namespace osu.Framework.Platform
         // 2000hz across the pipeline is the simplest model that "makes
         // sense": each update consumes one input + audio sample with a
         // tick of headroom, no rate is faster than what feeds it.
-        private const int torii_competitive_hz = 2000;
+        // Fallback when ToriiInputAudioHz is unset (e.g. headless). The live value
+        // comes from that bindable; see ToriiInputAudioHz + updateFrameSyncMode.
+        private const int default_competitive_hz = 2000;
 
         private void updateFrameSyncMode()
         {
             bool useDangerousNoCap = frameSyncMode?.Value == FrameSync.UnlimitedNoCap && allowDangerousUnlimitedNoCap?.Value == true;
+
+            // Single source of truth for the input/audio/update thread rate: the
+            // user's "Input/audio thread rate" setting (via ToriiInputAudioHz).
+            // Method-local of the same name as the old constant so the rate
+            // references below pick it up unchanged; falls back to 2000 when unset.
+            int torii_competitive_hz = ToriiInputAudioHz.Value > 0 ? ToriiInputAudioHz.Value : default_competitive_hz;
 
             // Set AudioThread and InputThread frame rates (can be done without window).
             // Torii: always cap input/audio at torii_competitive_hz (2000hz) regardless of frame sync

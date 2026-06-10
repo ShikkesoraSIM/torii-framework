@@ -1530,7 +1530,12 @@ namespace osu.Framework.Platform
             else if (!AllowBenchmarkUnlimitedFrames)
             {
                 drawLimiter = Math.Min((double)maximum_sane_fps, drawLimiter);
-                updateLimiter = Math.Min((double)maximum_sane_fps, updateLimiter);
+                // Torii: the update thread matches input/audio (ToriiInputAudioHz) in the
+                // capped modes too (VSync / Limit2x/4x/8x) — the frame limiter caps DRAW
+                // only. Bypasses the legacy 1000hz sane clamp for update, like the Unlimited
+                // modes above. (Without this, update got chained to the draw limiter, e.g.
+                // 240hz at 2x refresh on a 60hz screen, starving input handling.)
+                updateLimiter = ToriiInputAudioHz.Value;
             }
 
             MaximumDrawHz = drawLimiter;

@@ -1214,6 +1214,19 @@ namespace osu.Framework.Platform
 
         private Bindable<FrameSync> frameSyncMode;
 
+        /// <summary>
+        /// Torii: the input/audio/update thread rate (Hz). Driven by the in-game
+        /// "Input/audio thread rate" setting — OsuGameBase wires it from
+        /// OsuSetting.ToriiInputAudioHz into this bindable. <see cref="updateFrameSyncMode"/>
+        /// reads it as the single source of truth, falling back to
+        /// <see cref="default_competitive_hz"/> when unset (e.g. headless).
+        /// </summary>
+        public BindableInt ToriiInputAudioHz { get; } = new BindableInt(default_competitive_hz)
+        {
+            MinValue = 250,
+            MaxValue = 16000,
+        };
+
         private IBindable<DisplayMode> currentDisplayMode;
 
         private Bindable<string> ignoredInputHandlers;
@@ -1251,6 +1264,10 @@ namespace osu.Framework.Platform
 
             frameSyncMode = Config.GetBindable<FrameSync>(FrameworkSetting.FrameSync);
             frameSyncMode.ValueChanged += _ => updateFrameSyncMode();
+
+            // Torii: re-evaluate frame-sync rates whenever the input/audio thread
+            // Hz changes (OsuGameBase sets this from OsuSetting.ToriiInputAudioHz).
+            ToriiInputAudioHz.BindValueChanged(_ => updateFrameSyncMode(), true);
 
 #pragma warning disable 618
             // pragma region can be removed 20210911
@@ -1324,8 +1341,30 @@ namespace osu.Framework.Platform
         /// </summary>
         private const int maximum_sane_fps = GameThread.DEFAULT_ACTIVE_HZ;
 
+        // Torii: fallback input/audio/update rate used when ToriiInputAudioHz is
+        // unset (e.g. headless). The live value comes from that bindable; see
+        // ToriiInputAudioHz + updateFrameSyncMode. 2000hz matches modern high-end
+        // mouse polling while giving the update thread comfortable per-tick headroom.
+        private const int default_competitive_hz = 2000;
+
         private void updateFrameSyncMode()
         {
+            // Torii: drive input/audio polling (and the multi-threaded main thread)
+            // from the user-selected rate. This can be applied without a window, so
+            // it runs before the early return below.
+            int toriiHz = ToriiInputAudioHz.Value > 0 ? ToriiInputAudioHz.Value : default_competitive_hz;
+
+            if (AudioThread != null && InputThread != null)
+            {
+                AudioThread.ActiveHz = toriiHz;
+                AudioThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
+                InputThread.ActiveHz = toriiHz;
+                InputThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
+
+                if (threadRunner != null)
+                    threadRunner.MainThreadActiveHzOverride = toriiHz;
+            }
+
             if (Window == null)
                 return;
 
@@ -1371,7 +1410,10 @@ namespace osu.Framework.Platform
             if (!AllowBenchmarkUnlimitedFrames)
             {
                 drawLimiter = Math.Min(maximum_sane_fps, drawLimiter);
-                updateLimiter = Math.Min(maximum_sane_fps, updateLimiter);
+                // Torii: pin the update thread to the chosen input/audio rate so each
+                // tick consumes one fresh input sample (no half-empty ticks). This
+                // matches InputThread/AudioThread.ActiveHz set above.
+                updateLimiter = toriiHz;
             }
 
             MaximumDrawHz = drawLimiter;

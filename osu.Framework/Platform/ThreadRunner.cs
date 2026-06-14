@@ -45,6 +45,24 @@ namespace osu.Framework.Platform
             }
         }
 
+        private double? mainThreadActiveHzOverride;
+
+        /// <summary>
+        /// Torii: overrides the active rate used by the main/input thread while running
+        /// multi-threaded. Lets us raise input/audio polling above the historical 1000hz
+        /// cap (driven by the in-game "Input/audio thread rate" setting) without forcing
+        /// draw fully uncapped. Null restores the framework default.
+        /// </summary>
+        public double? MainThreadActiveHzOverride
+        {
+            get => mainThreadActiveHzOverride;
+            set
+            {
+                mainThreadActiveHzOverride = value;
+                updateMainThreadRates();
+            }
+        }
+
         private double maximumInactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
 
         public double MaximumInactiveHz
@@ -223,6 +241,13 @@ namespace osu.Framework.Platform
             {
                 mainThread.ActiveHz = maximumUpdateHz;
                 mainThread.InactiveHz = maximumInactiveHz;
+            }
+            else if (mainThreadActiveHzOverride.HasValue)
+            {
+                // Torii: keep the main/input thread polling at the user-selected rate
+                // (matching InputThread/AudioThread.ActiveHz) instead of the 1000hz default.
+                mainThread.ActiveHz = mainThreadActiveHzOverride.Value;
+                mainThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
             }
             else
             {

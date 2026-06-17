@@ -20,4 +20,8 @@
   <ItemGroup>
     <PackageReference Include="Xamarin.AndroidX.Window" Version="1.2.0.1" PrivateAssets="compile" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Torii: native low-latency Oboe/AAudio bridge (consumed by osu.Framework/Audio/Oboe*). -->
+    <AndroidNativeLibrary Include="libs\arm64-v8a\libosu_native.so" />
+  </ItemGroup>
 </Project>

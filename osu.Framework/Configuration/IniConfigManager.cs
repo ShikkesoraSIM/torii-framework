@@ -71,7 +71,10 @@ namespace osu.Framework.Configuration
                             }
                             catch (Exception e)
                             {
-                                Logger.Log($@"Unable to parse config key {lookup}: {e}", LoggingTarget.Runtime, LogLevel.Important);
+                                // torii: un valor que no parsea cae al default igual (es benigno); lo
+                                // dejamos en el log pero a Verbose asi no salta como notificacion fea
+                                // arriba a la derecha cuando un setting se renombra entre versiones.
+                                Logger.Log($@"Unable to parse config key {lookup}: {e}", LoggingTarget.Runtime, LogLevel.Verbose);
                             }
                         }
                         else if (AddMissingEntries)

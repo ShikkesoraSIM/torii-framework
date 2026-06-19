@@ -1214,6 +1214,10 @@ namespace osu.Framework.Platform
 
         private Bindable<FrameSync> frameSyncMode;
 
+        // torii: cuando esta en true, el modo Unlimited descapea tambien el update thread (no solo el
+        // draw). gateado en updateFrameSyncMode; el toggle "I am stupid" del juego lo prende.
+        private Bindable<bool> allowDangerousUnlimitedNoCap;
+
         /// <summary>
         /// Torii: the input/audio/update thread rate (Hz). Driven by the in-game
         /// "Input/audio thread rate" setting — OsuGameBase wires it from
@@ -1264,6 +1268,9 @@ namespace osu.Framework.Platform
 
             frameSyncMode = Config.GetBindable<FrameSync>(FrameworkSetting.FrameSync);
             frameSyncMode.ValueChanged += _ => updateFrameSyncMode();
+
+            allowDangerousUnlimitedNoCap = Config.GetBindable<bool>(FrameworkSetting.AllowDangerousUnlimitedNoCap);
+            allowDangerousUnlimitedNoCap.BindValueChanged(_ => updateFrameSyncMode());
 
             // Torii: re-evaluate frame-sync rates whenever the input/audio thread
             // Hz changes (OsuGameBase sets this from OsuSetting.ToriiInputAudioHz).
@@ -1407,7 +1414,12 @@ namespace osu.Framework.Platform
                     break;
             }
 
-            if (!AllowBenchmarkUnlimitedFrames)
+            // torii: el toggle "I am stupid" descapea de verdad, pero SOLO en modo Unlimited. en los
+            // demas modos el flag se ignora. ojo: en renderers Deferred esto es peligroso (el update
+            // sin cap encola draw events sin limite -> OOM), por eso el juego lo fuerza off ahi.
+            bool useDangerousNoCap = allowDangerousUnlimitedNoCap?.Value == true && frameSyncMode.Value == FrameSync.Unlimited;
+
+            if (!AllowBenchmarkUnlimitedFrames && !useDangerousNoCap)
             {
                 drawLimiter = Math.Min(maximum_sane_fps, drawLimiter);
                 // Torii: pin the update thread to the chosen input/audio rate so each

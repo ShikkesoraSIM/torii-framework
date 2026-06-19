@@ -44,6 +44,9 @@ namespace osu.Framework.Configuration
             SetDefault(FrameworkSetting.Renderer, RendererType.Automatic);
             SetDefault(FrameworkSetting.ShowUnicode, false);
             SetDefault(FrameworkSetting.Locale, string.Empty);
+            // torii: opt-in para que el modo Unlimited descapee tambien el update/input/audio (no solo
+            // el draw). por default false: Unlimited capea el update al rate de input/audio elegido.
+            SetDefault(FrameworkSetting.AllowDangerousUnlimitedNoCap, false);
 
 #pragma warning disable 618
             SetDefault(FrameworkSetting.MapAbsoluteInputToWindow, false);
@@ -103,6 +106,7 @@ namespace osu.Framework.Configuration
         WindowMode,
         ConfineMouseMode,
         FrameSync,
+        AllowDangerousUnlimitedNoCap,
         ExecutionMode,
 
         ShowUnicode,

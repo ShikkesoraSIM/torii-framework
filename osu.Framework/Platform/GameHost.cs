@@ -1412,16 +1412,26 @@ namespace osu.Framework.Platform
                     drawLimiter = int.MaxValue;
                     updateLimiter = int.MaxValue;
                     break;
+
+                case FrameSync.UnlimitedNoCap:
+                    drawLimiter = int.MaxValue;
+                    updateLimiter = int.MaxValue;
+                    break;
             }
 
-            // torii: el toggle "I am stupid" descapea de verdad, pero SOLO en modo Unlimited. en los
-            // demas modos el flag se ignora. ojo: en renderers Deferred esto es peligroso (el update
-            // sin cap encola draw events sin limite -> OOM), por eso el juego lo fuerza off ahi.
-            bool useDangerousNoCap = allowDangerousUnlimitedNoCap?.Value == true && frameSyncMode.Value == FrameSync.Unlimited;
+            // torii: igual que master. el toggle "I am stupid" (allowDangerousUnlimitedNoCap) descapea
+            // el multithread (update/input/audio) pero SOLO en UnlimitedNoCap. eso es lo peligroso en
+            // deferred (el update sin cap encola draw events sin limite -> OOM), por eso el juego lo
+            // fuerza off ahi. el draw sin cap en cambio es seguro en cualquier renderer.
+            bool useDangerousNoCap = allowDangerousUnlimitedNoCap?.Value == true && frameSyncMode.Value == FrameSync.UnlimitedNoCap;
 
             if (!AllowBenchmarkUnlimitedFrames && !useDangerousNoCap)
             {
-                drawLimiter = Math.Min(maximum_sane_fps, drawLimiter);
+                // UnlimitedNoCap deja el draw volar (fps de dibujo infinito, seguro). los demas modos
+                // lo clampean a sane asi no dibujamos frames que el monitor no puede mostrar.
+                if (frameSyncMode.Value != FrameSync.UnlimitedNoCap)
+                    drawLimiter = Math.Min(maximum_sane_fps, drawLimiter);
+
                 // Torii: pin the update thread to the chosen input/audio rate so each
                 // tick consumes one fresh input sample (no half-empty ticks). This
                 // matches InputThread/AudioThread.ActiveHz set above.

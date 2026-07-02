@@ -23,5 +23,11 @@ namespace osu.Framework.Configuration
 
         [Description("Basically unlimited")]
         Unlimited,
+
+        // torii: draw fully uncappeado (sin el clamp de sane fps). el counter se pone cyan.
+        // seguro en cualquier renderer; lo peligroso (multithread infinito) va aparte con el
+        // toggle "i am stupid", que se deshabilita en deferred.
+        [Description("Unlimited")]
+        UnlimitedNoCap,
     }
 }

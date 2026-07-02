@@ -1512,11 +1512,13 @@ namespace osu.Framework.Platform
 
             if (frameSyncMode.Value == FrameSync.UnlimitedNoCap)
             {
-                // By default this is only draw-unlimited. Update runs at the Torii competitive rate
-                // so the loop matches the input/audio rate (no half-empty ticks). Fully unbounded
-                // scheduling is reserved for the explicit "I am stupid" override.
+                // torii: el draw NO puede pasar el rate del update (el triple buffer hace que el draw
+                // espere un frame nuevo del update -> draw <= update en cualquier renderer). asi que
+                // para que "Unlimited" deje el draw volar de verdad, tambien soltamos el update.
+                // EXCEPTO en deferred, donde el update sin cap encola command buffers -> OOM: ahi lo
+                // dejamos clavado al Hz. input/audio siguen al Hz salvo "I am stupid" (arriba).
                 drawLimiter = double.MaxValue;
-                updateLimiter = useDangerousNoCap ? double.MaxValue : ToriiInputAudioHz.Value;
+                updateLimiter = (useDangerousNoCap || !isDeferredRenderer(ResolvedRenderer)) ? double.MaxValue : ToriiInputAudioHz.Value;
             }
             else if (frameSyncMode.Value == FrameSync.Unlimited)
             {
@@ -1541,6 +1543,14 @@ namespace osu.Framework.Platform
             MaximumDrawHz = drawLimiter;
             MaximumUpdateHz = updateLimiter;
         }
+
+        // torii: los renderers deferred graban command buffers por frame de update; si el update corre
+        // sin cap, esa cola crece sin freno -> OOM. por eso no soltamos el update en deferred.
+        private static bool isDeferredRenderer(RendererType t) =>
+            t == RendererType.Deferred_Direct3D11
+            || t == RendererType.Deferred_Metal
+            || t == RendererType.Deferred_OpenGL
+            || t == RendererType.Deferred_Vulkan;
 
         private void setVSyncMode()
         {

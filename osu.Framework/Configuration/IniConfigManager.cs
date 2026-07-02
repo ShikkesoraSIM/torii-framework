@@ -26,6 +26,11 @@ namespace osu.Framework.Configuration
 
         private readonly Storage storage;
 
+        // torii: keys leidas del ini que no matchean ningun miembro del enum de ESTE build. las
+        // preservamos tal cual (ver PerformLoad/PerformSave) para no perder settings al saltar entre
+        // streams con enums distintos, o al bajar a un build viejo que todavia no tiene ese setting.
+        private readonly Dictionary<string, string> preservedUnknownKeys = new Dictionary<string, string>();
+
         public IniConfigManager(Storage storage, IDictionary<TLookup, object> defaultOverrides = null)
             : base(defaultOverrides)
         {
@@ -58,7 +63,12 @@ namespace osu.Framework.Configuration
                         string val = line.AsSpan(equalsIndex + 1).Trim().ToString();
 
                         if (!Enum.TryParse(key, out TLookup lookup))
+                        {
+                            // key que este build no conoce: la guardamos para reescribirla igual al
+                            // guardar, asi no la perdemos por saltar de stream o abrir un build viejo.
+                            preservedUnknownKeys[key] = val;
                             continue;
+                        }
 
                         if (ConfigStore.TryGetValue(lookup, out IBindable b))
                         {
@@ -95,6 +105,11 @@ namespace osu.Framework.Configuration
                 {
                     foreach (var p in ConfigStore)
                         w.WriteLine(@"{0} = {1}", p.Key, p.Value.ToString(CultureInfo.InvariantCulture).AsNonNull().Replace("\n", "").Replace("\r", ""));
+
+                    // torii: reescribimos las keys que este build no reconoce tal cual las leimos, asi
+                    // los settings/flags del otro stream sobreviven el ida y vuelta.
+                    foreach (var p in preservedUnknownKeys)
+                        w.WriteLine(@"{0} = {1}", p.Key, p.Value.Replace("\n", "").Replace("\r", ""));
                 }
             }
             catch

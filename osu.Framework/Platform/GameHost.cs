@@ -1361,15 +1361,26 @@ namespace osu.Framework.Platform
             // it runs before the early return below.
             int toriiHz = ToriiInputAudioHz.Value > 0 ? ToriiInputAudioHz.Value : default_competitive_hz;
 
+            // torii: el toggle "I am stupid" (allowDangerousUnlimitedNoCap) descapea TODO el multithread
+            // (update + input + audio), y SOLO en UnlimitedNoCap. es lo peligroso (input/audio infinito ->
+            // pops; update infinito en deferred -> OOM), por eso el juego lo fuerza off en deferred. lo
+            // computamos aca arriba porque tambien decide el rate de input/audio de abajo.
+            bool useDangerousNoCap = allowDangerousUnlimitedNoCap?.Value == true && frameSyncMode.Value == FrameSync.UnlimitedNoCap;
+
             if (AudioThread != null && InputThread != null)
             {
-                AudioThread.ActiveHz = toriiHz;
+                // con "I am stupid" input/audio van libres (todo al mango); si no, al Hz elegido.
+                double ioHz = useDangerousNoCap ? double.MaxValue : toriiHz;
+                AudioThread.ActiveHz = ioHz;
                 AudioThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
-                InputThread.ActiveHz = toriiHz;
+                InputThread.ActiveHz = ioHz;
                 InputThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
 
                 if (threadRunner != null)
-                    threadRunner.MainThreadActiveHzOverride = toriiHz;
+                {
+                    threadRunner.UnlimitedFrameRate = useDangerousNoCap;
+                    threadRunner.MainThreadActiveHzOverride = useDangerousNoCap ? (double?)null : toriiHz;
+                }
             }
 
             if (Window == null)
@@ -1419,12 +1430,6 @@ namespace osu.Framework.Platform
                     break;
             }
 
-            // torii: igual que master. el toggle "I am stupid" (allowDangerousUnlimitedNoCap) descapea
-            // el multithread (update/input/audio) pero SOLO en UnlimitedNoCap. eso es lo peligroso en
-            // deferred (el update sin cap encola draw events sin limite -> OOM), por eso el juego lo
-            // fuerza off ahi. el draw sin cap en cambio es seguro en cualquier renderer.
-            bool useDangerousNoCap = allowDangerousUnlimitedNoCap?.Value == true && frameSyncMode.Value == FrameSync.UnlimitedNoCap;
-
             if (!AllowBenchmarkUnlimitedFrames && !useDangerousNoCap)
             {
                 // UnlimitedNoCap deja el draw volar (fps de dibujo infinito, seguro). los demas modos
@@ -1432,15 +1437,27 @@ namespace osu.Framework.Platform
                 if (frameSyncMode.Value != FrameSync.UnlimitedNoCap)
                     drawLimiter = Math.Min(maximum_sane_fps, drawLimiter);
 
-                // Torii: pin the update thread to the chosen input/audio rate so each
-                // tick consumes one fresh input sample (no half-empty ticks). This
-                // matches InputThread/AudioThread.ActiveHz set above.
-                updateLimiter = toriiHz;
+                // torii: OJO - el draw NO puede pasar el rate del update. el draw thread espera en el
+                // triple buffer (GetForRead) a que el update escriba un frame nuevo, asi que draw <=
+                // update en CUALQUIER renderer. por eso, para que "Unlimited" de verdad deje el draw
+                // volar, en UnlimitedNoCap tambien soltamos el update. EXCEPTO en deferred, donde el
+                // update sin cap encola command buffers -> OOM: ahi lo clavamos al Hz. en los demas
+                // modos update = Hz elegido (ademas cada tick consume un sample de input fresco).
+                if (frameSyncMode.Value != FrameSync.UnlimitedNoCap || isDeferredRenderer(ResolvedRenderer))
+                    updateLimiter = toriiHz;
             }
 
             MaximumDrawHz = drawLimiter;
             MaximumUpdateHz = updateLimiter;
         }
+
+        // torii: los renderers deferred graban command buffers por frame de update; si el update corre
+        // sin cap, esa cola crece sin freno -> OOM. por eso no soltamos el update en deferred.
+        private static bool isDeferredRenderer(RendererType t) =>
+            t == RendererType.Deferred_Direct3D11
+            || t == RendererType.Deferred_Metal
+            || t == RendererType.Deferred_OpenGL
+            || t == RendererType.Deferred_Vulkan;
 
         private void setVSyncMode()
         {

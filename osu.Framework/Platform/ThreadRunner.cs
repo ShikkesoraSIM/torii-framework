@@ -63,6 +63,22 @@ namespace osu.Framework.Platform
             }
         }
 
+        private bool unlimitedFrameRate;
+
+        /// <summary>
+        /// Torii: descapea del todo el main/input thread (lo usa el toggle "I am stupid" en UnlimitedNoCap).
+        /// Sin esto, aunque el update/draw vuelen, el input seguiria clavado al override de Hz.
+        /// </summary>
+        public bool UnlimitedFrameRate
+        {
+            get => unlimitedFrameRate;
+            set
+            {
+                unlimitedFrameRate = value;
+                updateMainThreadRates();
+            }
+        }
+
         private double maximumInactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
 
         public double MaximumInactiveHz
@@ -241,6 +257,12 @@ namespace osu.Framework.Platform
             {
                 mainThread.ActiveHz = maximumUpdateHz;
                 mainThread.InactiveHz = maximumInactiveHz;
+            }
+            else if (unlimitedFrameRate)
+            {
+                // "I am stupid": todo al mango, el input tampoco tiene techo.
+                mainThread.ActiveHz = double.MaxValue;
+                mainThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
             }
             else if (mainThreadActiveHzOverride.HasValue)
             {

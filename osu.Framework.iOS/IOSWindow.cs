@@ -5,6 +5,8 @@ using System;
 using System.Drawing;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using CoreAnimation;
+using Foundation;
 using ObjCRuntime;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
@@ -47,6 +49,25 @@ namespace osu.Framework.iOS
 
             var appDelegate = (GameApplicationDelegate)UIApplication.SharedApplication.Delegate;
             appDelegate.DragDrop += TriggerDragDrop;
+
+            forceHighInputRate();
+        }
+
+        private CADisplayLink? touchRateLink;
+
+        // torii/ios: en ProMotion, iOS THROTTLEA la entrega de touchesMoved a 60hz para ahorrar bateria
+        // salvo que detecte un CADisplayLink a 120hz activo en el MAIN thread. si el input del dedo se
+        // siente clavado a 60, es por esto. mantenemos un CADisplayLink a 120 (callback vacio) en el main
+        // runloop solo para forzar que el sistema entregue el touch a 120hz. es el truco de flutter/engine
+        // (#35592). el sensor del dedo topea a 120hz por hardware; esto garantiza que lleguen esos 120.
+        private void forceHighInputRate()
+        {
+            touchRateLink = CADisplayLink.Create(() => { });
+
+            if (OperatingSystem.IsIOSVersionAtLeast(15))
+                touchRateLink.PreferredFrameRateRange = new CAFrameRateRange { Minimum = 120, Maximum = 120, Preferred = 120 };
+
+            touchRateLink.AddToRunLoop(NSRunLoop.Main, NSRunLoopMode.Common);
         }
 
         protected override unsafe void RunMainLoop()

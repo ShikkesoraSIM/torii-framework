@@ -1411,6 +1411,18 @@ namespace osu.Framework.Platform
         // unification and runs everything fully uncapped.
         public readonly BindableInt ToriiInputAudioHz = new BindableInt(2000);
 
+        // torii/ios: en movil (iOS/Android) el juego corre en UN solo core (ExecutionMode.SingleThread
+        // es el default de iOS) y presenta a 60/120hz. correr input/audio/update al rate competitivo de
+        // escritorio (2000hz por default) le pega a ese core al palo -> thermal throttle + frame-pacing
+        // horrible. por eso master (fork) anda como el orto en el ipad y vanilla (caps stock) vuela.
+        // en movil clampeamos el rate efectivo a un techo sano: 240hz = 2x el refresh de un ipad
+        // promotion, de sobra para touch (samplea ~120hz) y deja la tablet fria. en desktop no cambia nada.
+        private const double mobile_hz_ceiling = 240;
+
+        private double effectiveToriiHz => RuntimeInfo.IsMobile
+            ? Math.Min(ToriiInputAudioHz.Value, mobile_hz_ceiling)
+            : ToriiInputAudioHz.Value;
+
         private void updateFrameSyncMode()
         {
             bool useDangerousNoCap = frameSyncMode?.Value == FrameSync.UnlimitedNoCap && allowDangerousUnlimitedNoCap?.Value == true;
@@ -1421,9 +1433,9 @@ namespace osu.Framework.Platform
             // scheduling via "I am stupid" mode.
             if (AudioThread != null && InputThread != null)
             {
-                AudioThread.ActiveHz = useDangerousNoCap ? double.MaxValue : ToriiInputAudioHz.Value;
+                AudioThread.ActiveHz = useDangerousNoCap ? double.MaxValue : effectiveToriiHz;
                 AudioThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
-                InputThread.ActiveHz = useDangerousNoCap ? double.MaxValue : ToriiInputAudioHz.Value;
+                InputThread.ActiveHz = useDangerousNoCap ? double.MaxValue : effectiveToriiHz;
                 InputThread.InactiveHz = GameThread.DEFAULT_INACTIVE_HZ;
 
                 if (threadRunner != null)
@@ -1432,7 +1444,7 @@ namespace osu.Framework.Platform
                     threadRunner.UnlimitedFrameRate = useDangerousNoCap;
                     // Keep the main/input thread on the window loop at ToriiInputAudioHz in multi-threaded
                     // mode, matching the InputThread cap above. (Without this, ThreadRunner falls back to 1000hz.)
-                    threadRunner.MainThreadActiveHzOverride = useDangerousNoCap ? null : ToriiInputAudioHz.Value;
+                    threadRunner.MainThreadActiveHzOverride = useDangerousNoCap ? null : effectiveToriiHz;
                 }
             }
 
@@ -1542,6 +1554,17 @@ namespace osu.Framework.Platform
 
             MaximumDrawHz = drawLimiter;
             MaximumUpdateHz = updateLimiter;
+
+            if (RuntimeInfo.IsMobile)
+            {
+                // red de seguridad para movil: no importa el frame-sync mode (Unlimited/NoCap le meten
+                // double.MaxValue al update, y con Metal -non-deferred- el update se soltaba entero),
+                // el update/draw NUNCA pasan el techo movil. en single-thread el loop es uno solo, asi
+                // que capear esto es lo que evita que el core hierva. el present de Metal ya limita el
+                // draw por vsync igual, esto es doble seguro.
+                MaximumUpdateHz = Math.Min(MaximumUpdateHz, mobile_hz_ceiling);
+                MaximumDrawHz = Math.Min(MaximumDrawHz, mobile_hz_ceiling);
+            }
         }
 
         // torii: los renderers deferred graban command buffers por frame de update; si el update corre

@@ -78,7 +78,7 @@ namespace osu.Framework.Graphics.UserInterface
         private Menu parentMenu;
         private Menu submenu;
 
-        private readonly Box background;
+        private readonly Drawable background;
 
         private readonly Container<Menu> submenuContainer;
         private readonly LayoutValue positionLayout = new LayoutValue(Invalidation.DrawInfo | Invalidation.RequiredParentSizeToFit);
@@ -109,11 +109,7 @@ namespace osu.Framework.Graphics.UserInterface
                     Masking = true,
                     Children = new Drawable[]
                     {
-                        background = new Box
-                        {
-                            RelativeSizeAxes = Axes.Both,
-                            Colour = Color4.Black
-                        },
+                        background = CreateMenuBackground(),
                         ContentContainer = CreateScrollContainer(direction).With(d =>
                         {
                             d.RelativeSizeAxes = Axes.Both;
@@ -173,6 +169,13 @@ namespace osu.Framework.Graphics.UserInterface
             get => background.Colour;
             set => background.Colour = value;
         }
+
+        // torii: deja meter el backdrop glass sin duplicar Menu entero.
+        protected virtual Drawable CreateMenuBackground() => new Box
+        {
+            RelativeSizeAxes = Axes.Both,
+            Colour = Color4.Black,
+        };
 
         /// <summary>
         /// Gets or sets whether the scroll bar of this <see cref="Menu"/> should be visible.

@@ -345,7 +345,7 @@ namespace osu.Framework.Platform
 
             if (string.IsNullOrEmpty(Options.FriendlyGameName))
             {
-                Options.FriendlyGameName = $@"osu!framework (running ""{gameName}"")";
+                Options.FriendlyGameName = $@"Torii Framework (running ""{gameName}"")";
             }
 
             Name = gameName;

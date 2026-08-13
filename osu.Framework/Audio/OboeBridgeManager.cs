@@ -26,11 +26,11 @@ namespace osu.Framework.Audio
             {
                 if (oboeBridge != null)
                 {
-                    Debug.WriteLine("[osu!] Oboe bridge already started, ignoring request");
+                    Debug.WriteLine("[torii] Oboe bridge already started, ignoring request");
                     return;
                 }
 
-                Logger.Log($"[osu!] Starting Oboe bridge (sampleRate={sampleRate}, hasProvider={provider != IntPtr.Zero})");
+                Logger.Log($"[torii] Starting Oboe bridge (sampleRate={sampleRate}, hasProvider={provider != IntPtr.Zero})");
                 cachedOboeStatus = null;
 
                 try
@@ -60,14 +60,14 @@ namespace osu.Framework.Audio
                         }
 
                         try { SetThreadAffinity(audioAffinityMask); }
-                        catch (Exception e) { Debug.WriteLine($"[osu!] Audio thread affinity failed: {e.Message}"); }
+                        catch (Exception e) { Debug.WriteLine($"[torii] Audio thread affinity failed: {e.Message}"); }
 
                         bool started = bridge.Start();
                         if (!started) { System.Threading.Thread.Sleep(100); started = bridge.Start(); }
 
                         if (started)
                         {
-                            Logger.Log($"[osu!] Oboe bridge started successfully (api={(bridge.IsAAudio ? "AAudio" : "OpenSLES")}, mmap={bridge.IsMMap}, rate={bridge.SampleRate}Hz, burst={bridge.FramesPerBurst}f, buffer={bridge.BufferSizeInFrames}f)");
+                            Logger.Log($"[torii] Oboe bridge started successfully (api={(bridge.IsAAudio ? "AAudio" : "OpenSLES")}, mmap={bridge.IsMMap}, rate={bridge.SampleRate}Hz, burst={bridge.FramesPerBurst}f, buffer={bridge.BufferSizeInFrames}f)");
                             logOboeInfo(bridge);
 
                             onStarted?.Invoke(bridge.SampleRate);
@@ -88,17 +88,17 @@ namespace osu.Framework.Audio
                         else
                         {
                             string error = bridge.GetLastErrorMessage() ?? "Unknown";
-                            Logger.Log($"[osu!] Oboe bridge created but failed to start: {error}", level: LogLevel.Error);
+                            Logger.Log($"[torii] Oboe bridge created but failed to start: {error}", level: LogLevel.Error);
                         }
                     }
                     else
                     {
-                        Logger.Log("[osu!] Oboe bridge creation failed —native library not loaded or stream open failed", level: LogLevel.Error);
+                        Logger.Log("[torii] Oboe bridge creation failed —native library not loaded or stream open failed", level: LogLevel.Error);
                     }
                 }
                 catch (Exception e)
                 {
-                    Logger.Log($"[osu!] Oboe bridge init failed with exception: {e.Message}", level: LogLevel.Error);
+                    Logger.Log($"[torii] Oboe bridge init failed with exception: {e.Message}", level: LogLevel.Error);
                 }
             }
         }
@@ -132,17 +132,17 @@ namespace osu.Framework.Audio
         {
             if (oboeBridge is not OboeAudioBridge)
             {
-                Logger.Log("[osu!] Resync requested but Oboe bridge is not active —enable low-latency audio first.", level: LogLevel.Important);
+                Logger.Log("[torii] Resync requested but Oboe bridge is not active —enable low-latency audio first.", level: LogLevel.Important);
                 return;
             }
 
             if (hardwareLatencyDelegate != null)
             {
-                Logger.Log("[osu!] Resync ignored —a measurement is already in progress (wait ~2s).", level: LogLevel.Important);
+                Logger.Log("[torii] Resync ignored —a measurement is already in progress (wait ~2s).", level: LogLevel.Important);
                 return;
             }
 
-            Logger.Log("[osu!] Hardware audio offset: starting 2 s measurement window.");
+            Logger.Log("[torii] Hardware audio offset: starting 2 s measurement window.");
 
             const int sample_interval_ms = 150;
             const int window_ms = 2000;
@@ -195,7 +195,7 @@ namespace osu.Framework.Audio
 
                     if (samplesCount == 0)
                     {
-                        Logger.Log("[osu!] Hardware audio latency unavailable after 2 s —leaving audio offset unchanged.", level: LogLevel.Important);
+                        Logger.Log("[torii] Hardware audio latency unavailable after 2 s —leaving audio offset unchanged.", level: LogLevel.Important);
                         return;
                     }
 
@@ -212,10 +212,10 @@ namespace osu.Framework.Audio
                     for (int i = 0; i < samplesCount; i++) variance += (samples[i] - mean) * (samples[i] - mean);
                     double stdDev = Math.Sqrt(variance / samplesCount);
 
-                    Logger.Log($"[osu!] Hardware audio latency measured: median={median:F1} ms (n={samplesCount}, σ{stdDev:F1} ms, range=[{samples[0]:F1}, {samples[samplesCount - 1]:F1}] ms)");
+                    Logger.Log($"[torii] Hardware audio latency measured: median={median:F1} ms (n={samplesCount}, σ{stdDev:F1} ms, range=[{samples[0]:F1}, {samples[samplesCount - 1]:F1}] ms)");
 
                     try { onLatencyMeasured(median); }
-                    catch (Exception ex) { Logger.Log($"[osu!] Hardware-latency callback failed: {ex.Message}", level: LogLevel.Error); }
+                    catch (Exception ex) { Logger.Log($"[torii] Hardware-latency callback failed: {ex.Message}", level: LogLevel.Error); }
                 }
             }, sample_interval_ms, sample_interval_ms);
 
@@ -228,13 +228,13 @@ namespace osu.Framework.Audio
         {
             lock (oboeLock)
             {
-                Logger.Log("[osu!] Stopping Oboe bridge...");
+                Logger.Log("[torii] Stopping Oboe bridge...");
                 hardwareLatencyDelegate?.Cancel();
                 hardwareLatencyDelegate = null;
                 (oboeBridge as OboeAudioBridge)?.Dispose();
                 oboeBridge = null;
                 cachedOboeStatus = null;
-                Logger.Log("[osu!] Oboe bridge stopped");
+                Logger.Log("[torii] Oboe bridge stopped");
             }
         }
 
@@ -310,7 +310,7 @@ namespace osu.Framework.Audio
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static void logOboeInfo(OboeAudioBridge bridge)
         {
-            Debug.WriteLine($"[osu!] Oboe audio: {bridge.SampleRate}Hz, "
+            Debug.WriteLine($"[torii] Oboe audio: {bridge.SampleRate}Hz, "
                             + $"api={(bridge.IsAAudio ? "AAudio" : "OpenSLES")}, "
                             + $"mmap={bridge.IsMMap}, "
                             + $"burst={bridge.FramesPerBurst}, "

@@ -91,7 +91,7 @@ namespace osu.Framework.Audio
             if (hardwareSampleRate > 0)
                 sampleRate = hardwareSampleRate;
 
-            Console.WriteLine($"[osu!] Oboe redirector: refreshing master mixer @ {sampleRate}Hz");
+            Console.WriteLine($"[torii] Oboe redirector: refreshing master mixer @ {sampleRate}Hz");
 
             // All BASS mixer calls + framework-mixer recreation MUST run on the audio
             // thread —BassAudioMixer.activeChannels and friends are only safe to read
@@ -126,7 +126,7 @@ namespace osu.Framework.Audio
 
             if (handle == 0)
             {
-                Console.WriteLine($"[osu!] Oboe redirector: CreateMixerStream failed: {Bass.LastError}");
+                Console.WriteLine($"[torii] Oboe redirector: CreateMixerStream failed: {Bass.LastError}");
                 return;
             }
 
@@ -139,7 +139,7 @@ namespace osu.Framework.Audio
 
             if (!setGlobalMixerHandle(handle))
             {
-                Console.WriteLine("[osu!] Oboe redirector: failed to set GlobalMixerHandle, aborting redirection");
+                Console.WriteLine("[torii] Oboe redirector: failed to set GlobalMixerHandle, aborting redirection");
                 Bass.StreamFree(handle);
                 masterMixer = 0;
                 ActiveMasterMixer = 0;
@@ -159,7 +159,7 @@ namespace osu.Framework.Audio
             // actually emitting audio.
             triggerMixerRecreation();
 
-            Console.WriteLine($"[osu!] Oboe redirector active: GlobalMixerHandle={handle} sampleRate={sampleRate}Hz");
+            Console.WriteLine($"[torii] Oboe redirector active: GlobalMixerHandle={handle} sampleRate={sampleRate}Hz");
         }
 
         /// <summary>
@@ -195,7 +195,7 @@ namespace osu.Framework.Audio
             }
             catch (Exception e)
             {
-                Console.WriteLine($"[osu!] enqueueOnAudioThread failed: {e.Message}");
+                Console.WriteLine($"[torii] enqueueOnAudioThread failed: {e.Message}");
                 return false;
             }
         }
@@ -218,7 +218,7 @@ namespace osu.Framework.Audio
 
                     if (globalMixerHandleWritable == null)
                     {
-                        Console.WriteLine("[osu!] AudioManager.GlobalMixerHandle is not a writable Bindable<int?> —framework version mismatch?");
+                        Console.WriteLine("[torii] AudioManager.GlobalMixerHandle is not a writable Bindable<int?> —framework version mismatch?");
                         return false;
                     }
                 }
@@ -228,7 +228,7 @@ namespace osu.Framework.Audio
             }
             catch (Exception e)
             {
-                Console.WriteLine($"[osu!] setGlobalMixerHandle failed: {e.Message}");
+                Console.WriteLine($"[torii] setGlobalMixerHandle failed: {e.Message}");
                 return false;
             }
         }
@@ -262,7 +262,7 @@ namespace osu.Framework.Audio
 
                 if (cachedUpdateDeviceMethod == null)
                 {
-                    Console.WriteLine("[osu!] AudioCollectionManager.UpdateDevice(int) not found via reflection —cannot force mixer recreation");
+                    Console.WriteLine("[torii] AudioCollectionManager.UpdateDevice(int) not found via reflection —cannot force mixer recreation");
                     return;
                 }
 
@@ -270,7 +270,7 @@ namespace osu.Framework.Audio
             }
             catch (Exception e)
             {
-                Console.WriteLine($"[osu!] triggerMixerRecreation failed: {e.Message}");
+                Console.WriteLine($"[torii] triggerMixerRecreation failed: {e.Message}");
             }
         }
 

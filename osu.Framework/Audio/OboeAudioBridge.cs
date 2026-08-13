@@ -30,7 +30,7 @@ namespace osu.Framework.Audio
 
                 if (!success)
                 {
-                    Debug.WriteLine("[osu!] Primary native library load (safe path) failed, attempting standard load...");
+                    Debug.WriteLine("[torii] Primary native library load (safe path) failed, attempting standard load...");
                     // Fallback to standard library loading which might search more paths but is riskier on some devices
                     success = NativeLibrary.TryLoad(lib_name, out _);
                 }
@@ -39,21 +39,21 @@ namespace osu.Framework.Audio
             }
             catch (Exception e)
             {
-                Debug.WriteLine($"[osu!] Failed to load native library for Oboe: {e.Message}");
+                Debug.WriteLine($"[torii] Failed to load native library for Oboe: {e.Message}");
                 native_loaded = false;
             }
 
             if (!native_loaded)
-                Debug.WriteLine("[osu!] Native library not found, Oboe unavailable");
+                Debug.WriteLine("[torii] Native library not found, Oboe unavailable");
             else
-                Debug.WriteLine("[osu!] Native library loaded successfully for Oboe");
+                Debug.WriteLine("[torii] Native library loaded successfully for Oboe");
         }
 
         public static OboeAudioBridge? Create(int sampleRate = 0)
         {
             if (!native_loaded)
             {
-                Debug.WriteLine("[osu!] Oboe Create() skipped —native library not loaded");
+                Debug.WriteLine("[torii] Oboe Create() skipped —native library not loaded");
                 return null;
             }
 
@@ -63,7 +63,7 @@ namespace osu.Framework.Audio
 
                 if (ptr == IntPtr.Zero)
                 {
-                    Debug.WriteLine($"[osu!] nOboeCreate({sampleRate}) returned null —stream open failed");
+                    Debug.WriteLine($"[torii] nOboeCreate({sampleRate}) returned null —stream open failed");
                     return null;
                 }
 
@@ -71,7 +71,7 @@ namespace osu.Framework.Audio
             }
             catch (Exception e)
             {
-                Debug.WriteLine($"[osu!] nOboeCreate failed: {e.Message}");
+                Debug.WriteLine($"[torii] nOboeCreate failed: {e.Message}");
                 return null;
             }
         }

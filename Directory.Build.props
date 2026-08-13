@@ -46,7 +46,7 @@
     <Authors>ppy Pty Ltd</Authors>
     <Company>ppy Pty Ltd</Company>
     <Copyright>Copyright (c) 2024 ppy Pty Ltd</Copyright>
-    <Product>osu!framework</Product>
+    <Product>Torii Framework</Product>
     <PackageReleaseNotes>Automated release.</PackageReleaseNotes>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageIcon>icon.png</PackageIcon>

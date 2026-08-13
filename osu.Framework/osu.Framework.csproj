@@ -3,7 +3,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <OutputType>Library</OutputType>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <AssemblyTitle>osu!framework</AssemblyTitle>
+    <AssemblyTitle>Torii Framework</AssemblyTitle>
     <AssemblyName>osu.Framework</AssemblyName>
     <Description>A 2D application/game framework written with rhythm games in mind.</Description>
     <!-- Enabling this breaks iOS projects from building due to silly naming conflicts (https://github.com/dotnet/runtime/issues/79500#issuecomment-1345624309).

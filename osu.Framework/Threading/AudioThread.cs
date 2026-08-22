@@ -135,6 +135,11 @@ namespace osu.Framework.Threading
             Debug.Assert(ThreadSafety.IsAudioThread);
             Trace.Assert(deviceId != -1); // The real device ID should always be used, as the -1 device has special cases which are hard to work with.
 
+            // An exclusive-mode device belongs to us and nobody else, and "nobody else"
+            // includes BASS's own re-initialisation below: leaving it held makes that fail,
+            // which then cascades into WASAPI being switched off entirely. Let go first.
+            freeWasapi();
+
             // Try to initialise the device, or request a re-initialise.
             if (!Bass.Init(deviceId, Flags: (DeviceInitFlags)128)) // 128 == BASS_DEVICE_REINIT
                 return false;
@@ -312,17 +317,37 @@ namespace osu.Framework.Threading
                 ? new[] { (float)info.MinimumUpdatePeriod, (float)info.DefaultUpdatePeriod, 0f }
                 : new[] { 0f };
 
-            foreach ((int frequency, int channels) in formats)
+            // Two passes: floating point formats first. Everything upstream of here is
+            // float, so an integer format means a conversion, and a 16 bit one without
+            // dithering is audible as gritty quantisation noise (worst on bass and on
+            // reverb tails) which reads as "lower quality" rather than as a glitch.
+            foreach (bool floatOnly in new[] { true, false })
             {
-                if (BassWasapi.CheckFormat(wasapiDevice, frequency, channels, WasapiInitFlags.Exclusive) == WasapiFormat.Unknown)
-                    continue;
-
-                foreach (float period in periods)
+                foreach ((int frequency, int channels) in formats)
                 {
-                    if (BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: WasapiInitFlags.EventDriven | WasapiInitFlags.Exclusive, Buffer: 0f, Period: period))
+                    var format = BassWasapi.CheckFormat(wasapiDevice, frequency, channels, WasapiInitFlags.Exclusive);
+
+                    if (format == WasapiFormat.Unknown)
+                        continue;
+
+                    if (floatOnly && format != WasapiFormat.Float)
+                        continue;
+
+                    var flags = WasapiInitFlags.EventDriven | WasapiInitFlags.Exclusive;
+
+                    // dithering only matters when we're being narrowed to integer samples.
+                    if (format != WasapiFormat.Float)
+                        flags |= WasapiInitFlags.Dither;
+
+                    foreach (float period in periods)
                     {
-                        Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch, period {period}s)...success!");
-                        return true;
+                        // buffer stays at the device default on purpose: padding it out
+                        // would just be latency, which is the entire point of this mode.
+                        if (BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: 0f, Period: period))
+                        {
+                            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch {format}, period {period}s)...success!");
+                            return true;
+                        }
                     }
                 }
             }

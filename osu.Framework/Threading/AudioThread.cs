@@ -161,11 +161,33 @@ namespace osu.Framework.Threading
             // el modo cambio: la medicion vieja ya no vale nada.
             smoothedLatency = 0;
             lastLatencyUpdate = 0;
+
+            // en legacy, bass entrega a una sesion compartida de windows que corre por
+            // adentro y que el no reporta: dos periodos del dispositivo de colchon, que
+            // es como funciona una sesion event-driven. se estima una vez aca porque
+            // enumerar dispositivos no es gratis.
+            legacySessionEstimateMs = 0;
+
+            if (!useExperimentalWasapi)
+            {
+                try
+                {
+                    int wasapiDevice = findWasapiDevice();
+
+                    if (wasapiDevice >= 0 && BassWasapi.GetDeviceInfo(wasapiDevice, out WasapiDeviceInfo info) && info.DefaultUpdatePeriod > 0)
+                        legacySessionEstimateMs = info.DefaultUpdatePeriod * 2 * 1000;
+                }
+                catch
+                {
+                }
+            }
+
             return true;
         }
 
         private double lastLatencyUpdate;
         private double smoothedLatency;
+        private double legacySessionEstimateMs;
 
         /// <summary>
         /// How far behind the audio output currently is, in milliseconds.
@@ -208,7 +230,14 @@ namespace osu.Framework.Threading
                     }
                 }
                 else if (Bass.GetInfo(out BassInfo bassInfo))
-                    latency = bassInfo.Latency;
+                {
+                    // el camino entero: lo que bass estima del dispositivo + su propio
+                    // buffer y periodo de update + la sesion compartida de windows que
+                    // usa por adentro y no cuenta. sin ese ultimo termino el numero daba
+                    // 25ms y decia que legacy era mas rapido que wasapi compartido, que
+                    // es exactamente al reves de lo que se siente jugando.
+                    latency = bassInfo.Latency + Bass.DeviceBufferLength + Bass.UpdatePeriod + legacySessionEstimateMs;
+                }
             }
             catch
             {
@@ -265,33 +294,7 @@ namespace osu.Framework.Threading
 
             Logger.Log("Attempting local BassWasapi initialisation");
 
-            int wasapiDevice = -1;
-
-            // WASAPI device indices don't match normal BASS devices.
-            // Each device is listed multiple times with each supported channel/frequency pair.
-            //
-            // Working backwards to find the correct device is how bass does things internally (see BassWasapi.GetBassDevice).
-            if (Bass.CurrentDevice > 0)
-            {
-                string driver = Bass.GetDeviceInfo(Bass.CurrentDevice).Driver;
-
-                if (!string.IsNullOrEmpty(driver))
-                {
-                    // In the normal execution case, BassWasapi.GetDeviceInfo will return false as soon as we reach the end of devices.
-                    // This while condition is just a safety to avoid looping forever.
-                    // It's intentionally quite high because if a user has many audio devices, this list can get long.
-                    //
-                    // Retrieving device info here isn't free. In the future we may want to investigate a better method.
-                    while (wasapiDevice < 16384)
-                    {
-                        if (!BassWasapi.GetDeviceInfo(++wasapiDevice, out WasapiDeviceInfo info))
-                            break;
-
-                        if (info.ID == driver)
-                            break;
-                    }
-                }
-            }
+            int wasapiDevice = findWasapiDevice();
 
             // To keep things in a sane state let's only keep one device initialised via wasapi.
             freeWasapi();
@@ -350,6 +353,42 @@ namespace osu.Framework.Threading
 
             BassWasapi.SetNotify(wasapiNotifyProcedure);
             return true;
+        }
+
+        /// <summary>
+        /// The WASAPI device index matching the current BASS device, or -1.
+        /// </summary>
+        private static int findWasapiDevice()
+        {
+            int wasapiDevice = -1;
+
+            // WASAPI device indices don't match normal BASS devices.
+            // Each device is listed multiple times with each supported channel/frequency pair.
+            //
+            // Working backwards to find the correct device is how bass does things internally (see BassWasapi.GetBassDevice).
+            if (Bass.CurrentDevice > 0)
+            {
+                string driver = Bass.GetDeviceInfo(Bass.CurrentDevice).Driver;
+
+                if (!string.IsNullOrEmpty(driver))
+                {
+                    // In the normal execution case, BassWasapi.GetDeviceInfo will return false as soon as we reach the end of devices.
+                    // This while condition is just a safety to avoid looping forever.
+                    // It's intentionally quite high because if a user has many audio devices, this list can get long.
+                    //
+                    // Retrieving device info here isn't free. In the future we may want to investigate a better method.
+                    while (wasapiDevice < 16384)
+                    {
+                        if (!BassWasapi.GetDeviceInfo(++wasapiDevice, out WasapiDeviceInfo info))
+                            break;
+
+                        if (info.ID == driver)
+                            break;
+                    }
+                }
+            }
+
+            return wasapiDevice;
         }
 
         private bool initWasapiShared(int wasapiDevice)

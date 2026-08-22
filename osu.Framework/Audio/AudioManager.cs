@@ -43,6 +43,9 @@ namespace osu.Framework.Audio
         /// </remarks>
         private const int bass_default_device = 1;
 
+        private Errors lastFaultedError = Errors.OK;
+        private int lastFaultedDevice = -1;
+
         /// <summary>
         /// The manager component responsible for audio tracks (e.g. songs).
         /// </summary>
@@ -453,10 +456,16 @@ namespace osu.Framework.Audio
             if (success || !UseExperimentalWasapi.Value)
                 return success;
 
+            // Busy means someone ELSE has the device right now (another client running in
+            // exclusive mode, typically). That's transient: flipping the user's settings
+            // off over it would nuke their config because of something another process
+            // did. Fall through to the default-device path with settings intact instead.
+            bool deviceBusy = Bass.LastError == Errors.Busy;
+
             // exclusive mode fails whenever something else already holds the device or the
             // hardware doesn't do the format, so step down to shared before giving up on
             // WASAPI altogether. the user gets told about it via the bindable flipping back.
-            if (UseExclusiveWasapi.Value)
+            if (UseExclusiveWasapi.Value && !deviceBusy)
             {
                 Logger.Log($"BASS device {device} failed to initialise with exclusive WASAPI, falling back to shared", level: LogLevel.Important);
                 UseExclusiveWasapi.Value = false;
@@ -464,6 +473,9 @@ namespace osu.Framework.Audio
                 if (attemptInit())
                     return true;
             }
+
+            if (deviceBusy)
+                return false;
 
             // in the case we're using experimental WASAPI, give a second chance of initialisation by forcefully disabling it.
             Logger.Log($"BASS device {device} failed to initialise with experimental WASAPI, disabling", level: LogLevel.Error);
@@ -478,8 +490,20 @@ namespace osu.Framework.Audio
                 if (alreadyInitialised)
                     return true;
 
-                if (BassUtils.CheckFaulted(false))
+                // el retry de dispositivos corre cada segundo: el mismo error repetido
+                // se loguea una sola vez como notificacion y despues en silencio.
+                if (Bass.LastError != Errors.OK && Bass.LastError == lastFaultedError && device == lastFaultedDevice)
                     return false;
+
+                if (BassUtils.CheckFaulted(false))
+                {
+                    lastFaultedError = Bass.LastError;
+                    lastFaultedDevice = device;
+                    return false;
+                }
+
+                lastFaultedError = Errors.OK;
+                lastFaultedDevice = -1;
 
                 if (!innerSuccess)
                 {

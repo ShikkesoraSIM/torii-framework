@@ -137,15 +137,22 @@ namespace osu.Framework.Threading
         /// </summary>
         internal readonly Bindable<double> OutputLatency = new Bindable<double>();
 
+        /// <summary>Whether the live wasapi session, if any, holds the device exclusively.</summary>
+        private bool wasapiExclusiveActive;
+
         internal bool InitDevice(int deviceId, bool useExperimentalWasapi, bool exclusiveWasapi = false)
         {
             Debug.Assert(ThreadSafety.IsAudioThread);
             Trace.Assert(deviceId != -1); // The real device ID should always be used, as the -1 device has special cases which are hard to work with.
 
             // An exclusive-mode device belongs to us and nobody else, and "nobody else"
-            // includes BASS's own re-initialisation below: leaving it held makes that fail,
-            // which then cascades into WASAPI being switched off entirely. Let go first.
-            freeWasapi();
+            // includes BASS's own re-initialisation below: leaving it held makes that fail.
+            // Only exclusive sessions get released up front though. Releasing a SHARED one
+            // here leaves the endpoint mid-teardown and the very next Bass.Init comes back
+            // Busy, which cascades into "experimental WASAPI failed, disabling" and lands
+            // the user on the No sound device with their setting silently turned off.
+            if (wasapiExclusiveActive)
+                freeWasapi();
 
             // Try to initialise the device, or request a re-initialise.
             if (!Bass.Init(deviceId, Flags: (DeviceInitFlags)128)) // 128 == BASS_DEVICE_REINIT
@@ -168,7 +175,7 @@ namespace osu.Framework.Threading
             // enumerar dispositivos no es gratis.
             legacySessionEstimateMs = 0;
 
-            if (!useExperimentalWasapi)
+            if (!useExperimentalWasapi && RuntimeInfo.OS == RuntimeInfo.Platform.Windows)
             {
                 try
                 {
@@ -181,6 +188,14 @@ namespace osu.Framework.Threading
                 {
                 }
             }
+
+            // Nothing above is allowed to leak into what the caller sees: AudioManager
+            // checks Bass.LastError right after this returns and surfaces anything
+            // non-OK to the user as a "BASS faulted" notification. The wasapi device
+            // enumeration in particular always ends on an end-of-list error, and the
+            // latency probing can fail harmlessly too. A guaranteed-success call resets
+            // the code (device 0, "No sound", always exists).
+            Bass.GetDeviceInfo(0, out _);
 
             return true;
         }
@@ -205,6 +220,17 @@ namespace osu.Framework.Threading
                 return;
 
             lastLatencyUpdate = Clock.CurrentTime;
+
+            // el medidor entero es cosa de windows: en otras plataformas cada consulta
+            // que no corresponde deja un codigo de error colgado que despues aparece
+            // como "BASS faulted" sin que haya fallado nada. fuera de windows este
+            // codigo no existe y el framework queda igual que antes de agregarlo.
+            if (RuntimeInfo.OS != RuntimeInfo.Platform.Windows)
+                return;
+
+            // sin dispositivo inicializado no hay nada que medir, mismo motivo.
+            if (initialised_devices.Count == 0)
+                return;
 
             double latency = 0;
 
@@ -236,13 +262,22 @@ namespace osu.Framework.Threading
                     // usa por adentro y no cuenta. sin ese ultimo termino el numero daba
                     // 25ms y decia que legacy era mas rapido que wasapi compartido, que
                     // es exactamente al reves de lo que se siente jugando.
-                    latency = bassInfo.Latency + Bass.DeviceBufferLength + Bass.UpdatePeriod + legacySessionEstimateMs;
+                    latency = Math.Max(0, bassInfo.Latency);
+
+                    // los dos valores de config son cosa de windows; en otras
+                    // plataformas la consulta misma es un parametro invalido para bass.
+                    if (RuntimeInfo.OS == RuntimeInfo.Platform.Windows)
+                        latency += Math.Max(0, Bass.DeviceBufferLength) + Math.Max(0, Bass.UpdatePeriod) + legacySessionEstimateMs;
                 }
             }
             catch
             {
                 latency = 0;
             }
+
+            // mismo criterio que en InitDevice: nada de esto puede dejar un codigo de
+            // error colgado para que otro lo lea.
+            Bass.GetDeviceInfo(0, out _);
 
             // the wasapi reading swings by a period or two between samples; smooth it so
             // the number on screen is readable instead of flickering.
@@ -455,6 +490,7 @@ namespace osu.Framework.Threading
                         // would just be latency, which is the entire point of this mode.
                         if (BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: 0f, Period: period))
                         {
+                            wasapiExclusiveActive = true;
                             Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch {format}, period {period}s)...success!");
                             return true;
                         }
@@ -468,6 +504,8 @@ namespace osu.Framework.Threading
 
         private void freeWasapi()
         {
+            wasapiExclusiveActive = false;
+
             if (globalMixerHandle.Value == null) return;
 
             // The mixer probably doesn't need to be recycled. Just keeping things sane for now.

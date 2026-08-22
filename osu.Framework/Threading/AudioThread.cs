@@ -219,7 +219,26 @@ namespace osu.Framework.Threading
 
             // To keep things in a sane state let's only keep one device initialised via wasapi.
             freeWasapi();
-            return initWasapi(wasapiDevice, exclusive);
+
+            // Drivers are third-party code we don't control, and this runs on the audio
+            // thread where an exception is fatal. Failing to initialise must stay a
+            // "return false" (the caller falls back), never a crash.
+            try
+            {
+                return initWasapi(wasapiDevice, exclusive);
+            }
+            catch (Exception e)
+            {
+                Logger.Log($"BassWasapi initialisation threw for device {wasapiDevice}: {e.Message}", level: LogLevel.Error);
+
+                try
+                {
+                    freeWasapi();
+                }
+                catch { }
+
+                return false;
+            }
         }
 
         private bool initWasapi(int wasapiDevice, bool exclusive)
@@ -242,28 +261,9 @@ namespace osu.Framework.Threading
                 }
             });
 
-            var flags = WasapiInitFlags.EventDriven;
-            int frequency = 0;
-            int channels = 0;
-
-            if (exclusive)
-            {
-                // In exclusive mode the driver stops accepting whatever we hand it, so
-                // AutoFormat is not an option: a format it actually supports has to be
-                // negotiated up front, or Init just fails.
-                flags |= WasapiInitFlags.Exclusive;
-
-                if (!findExclusiveFormat(wasapiDevice, out frequency, out channels))
-                {
-                    Logger.Log($"No exclusive WASAPI format supported by device {wasapiDevice}", level: LogLevel.Important);
-                    return false;
-                }
-            }
-            else
-                flags |= WasapiInitFlags.AutoFormat;
-
-            bool initialised = BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: 0f, Period: float.Epsilon);
-            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} ({(exclusive ? $"exclusive {frequency}hz {channels}ch" : "shared")})...{(initialised ? "success!" : "FAILED")}");
+            bool initialised = exclusive
+                ? initWasapiExclusive(wasapiDevice)
+                : initWasapiShared(wasapiDevice);
 
             if (!initialised)
                 return false;
@@ -276,33 +276,58 @@ namespace osu.Framework.Threading
             return true;
         }
 
-        /// <summary>
-        /// Finds a format the device will accept in exclusive mode. Its own mix format is
-        /// tried first (that is what it is running at, so it is the safest bet), then the
-        /// usual suspects.
-        /// </summary>
-        private static bool findExclusiveFormat(int wasapiDevice, out int frequency, out int channels)
+        private bool initWasapiShared(int wasapiDevice)
         {
-            var candidates = new List<(int frequency, int channels)>();
+            bool initialised = BassWasapi.Init(wasapiDevice, Procedure: wasapiProcedure, Flags: WasapiInitFlags.EventDriven | WasapiInitFlags.AutoFormat, Buffer: 0f, Period: float.Epsilon);
+            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (shared)...{(initialised ? "success!" : $"FAILED ({Bass.LastError})")}");
+            return initialised;
+        }
 
-            if (BassWasapi.GetDeviceInfo(wasapiDevice, out WasapiDeviceInfo info) && info.MixFrequency > 0 && info.MixChannels > 0)
-                candidates.Add((info.MixFrequency, info.MixChannels));
+        /// <summary>
+        /// Exclusive mode is fussy in a way shared mode isn't: the device only accepts
+        /// formats it actually supports, and won't run at an arbitrarily small period
+        /// either. Both vary per device (every headset is different), so candidates are
+        /// tried in order of preference until one initialises.
+        /// </summary>
+        private bool initWasapiExclusive(int wasapiDevice)
+        {
+            BassWasapi.GetDeviceInfo(wasapiDevice, out WasapiDeviceInfo info);
+
+            var formats = new List<(int frequency, int channels)>();
+
+            // whatever the device is already running at is the safest bet.
+            if (info.MixFrequency > 0 && info.MixChannels > 0)
+                formats.Add((info.MixFrequency, info.MixChannels));
 
             foreach (int rate in new[] { 48000, 44100, 96000, 192000 })
-                candidates.Add((rate, 2));
-
-            foreach ((int candidateFrequency, int candidateChannels) in candidates)
             {
-                if (BassWasapi.CheckFormat(wasapiDevice, candidateFrequency, candidateChannels, WasapiInitFlags.Exclusive) == WasapiFormat.Unknown)
-                    continue;
+                formats.Add((rate, 2));
 
-                frequency = candidateFrequency;
-                channels = candidateChannels;
-                return true;
+                if (info.MixChannels > 2)
+                    formats.Add((rate, info.MixChannels));
             }
 
-            frequency = 0;
-            channels = 0;
+            // the device's own minimum is the lowest latency on offer; 0 lets it decide.
+            float[] periods = info.MinimumUpdatePeriod > 0
+                ? new[] { (float)info.MinimumUpdatePeriod, (float)info.DefaultUpdatePeriod, 0f }
+                : new[] { 0f };
+
+            foreach ((int frequency, int channels) in formats)
+            {
+                if (BassWasapi.CheckFormat(wasapiDevice, frequency, channels, WasapiInitFlags.Exclusive) == WasapiFormat.Unknown)
+                    continue;
+
+                foreach (float period in periods)
+                {
+                    if (BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: WasapiInitFlags.EventDriven | WasapiInitFlags.Exclusive, Buffer: 0f, Period: period))
+                    {
+                        Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch, period {period}s)...success!");
+                        return true;
+                    }
+                }
+            }
+
+            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive)...FAILED, no supported format ({Bass.LastError})", level: LogLevel.Important);
             return false;
         }
 

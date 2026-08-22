@@ -443,11 +443,12 @@ namespace osu.Framework.Audio
             if (success || !UseExperimentalWasapi.Value)
                 return success;
 
-            // exclusive mode fails whenever something else already holds the device, so
-            // step down to shared before giving up on WASAPI altogether.
+            // exclusive mode fails whenever something else already holds the device or the
+            // hardware doesn't do the format, so step down to shared before giving up on
+            // WASAPI altogether. the user gets told about it via the bindable flipping back.
             if (UseExclusiveWasapi.Value)
             {
-                Logger.Log($"BASS device {device} failed to initialise with exclusive WASAPI, falling back to shared", level: LogLevel.Error);
+                Logger.Log($"BASS device {device} failed to initialise with exclusive WASAPI, falling back to shared", level: LogLevel.Important);
                 UseExclusiveWasapi.Value = false;
 
                 if (attemptInit())

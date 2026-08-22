@@ -66,6 +66,8 @@ namespace osu.Framework.Threading
                     m.Update();
                 }
             }
+
+            updateOutputLatency();
         }
 
         internal void RegisterManager(AudioManager manager)
@@ -155,31 +157,71 @@ namespace osu.Framework.Threading
                 freeWasapi();
 
             initialised_devices.Add(deviceId);
-            updateOutputLatency();
+
+            // el modo cambio: la medicion vieja ya no vale nada.
+            smoothedLatency = 0;
+            lastLatencyUpdate = 0;
             return true;
         }
 
+        private double lastLatencyUpdate;
+        private double smoothedLatency;
+
         /// <summary>
-        /// Works out what the output path currently costs. Under WASAPI the device buffer
-        /// is the honest number; otherwise BASS's own device buffer is the best available.
+        /// How far behind the audio output currently is, in milliseconds.
+        ///
+        /// This is measured, not assumed. Under WASAPI it's how much audio is sitting in
+        /// the device queue waiting to be heard, which is the honest answer and moves
+        /// around; the buffer SIZE is not the same thing and reads far too high. Without
+        /// WASAPI, BASS reports its own measured playback delay.
         /// </summary>
         private void updateOutputLatency()
         {
+            // sampling this every audio frame would be noise; a few times a second is
+            // plenty for something a human reads off the screen.
+            if (Clock.CurrentTime - lastLatencyUpdate < 200)
+                return;
+
+            lastLatencyUpdate = Clock.CurrentTime;
+
+            double latency = 0;
+
             try
             {
                 if (globalMixerHandle.Value != null && BassWasapi.GetInfo(out WasapiInfo info) && info.Frequency > 0)
                 {
-                    // BufferLength is in samples, per channel.
-                    OutputLatency.Value = info.BufferLength / (double)info.Frequency / Math.Max(1, info.Channels) * 1000;
-                    return;
-                }
+                    int queuedBytes = BassWasapi.GetData(IntPtr.Zero, (int)DataFlags.Available);
 
-                OutputLatency.Value = Bass.DeviceBufferLength;
+                    if (queuedBytes > 0)
+                    {
+                        int bytesPerSample = info.Format switch
+                        {
+                            WasapiFormat.Float => 4,
+                            WasapiFormat.Bit32 => 4,
+                            WasapiFormat.Bit24 => 3,
+                            WasapiFormat.Bit16 => 2,
+                            WasapiFormat.Bit8 => 1,
+                            _ => 2,
+                        };
+
+                        latency = queuedBytes / ((double)info.Frequency * Math.Max(1, info.Channels) * bytesPerSample) * 1000;
+                    }
+                }
+                else if (Bass.GetInfo(out BassInfo bassInfo))
+                    latency = bassInfo.Latency;
             }
             catch
             {
-                OutputLatency.Value = 0;
+                latency = 0;
             }
+
+            // the wasapi reading swings by a period or two between samples; smooth it so
+            // the number on screen is readable instead of flickering.
+            smoothedLatency = smoothedLatency > 0 && latency > 0
+                ? smoothedLatency * 0.7 + latency * 0.3
+                : latency;
+
+            OutputLatency.Value = smoothedLatency;
         }
 
         internal void FreeDevice(int deviceId)

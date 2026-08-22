@@ -130,6 +130,11 @@ namespace osu.Framework.Threading
         /// </summary>
         private readonly Bindable<int?> globalMixerHandle = new Bindable<int?>();
 
+        /// <summary>
+        /// Output latency of the initialised device, in milliseconds. Zero if unknown.
+        /// </summary>
+        internal readonly Bindable<double> OutputLatency = new Bindable<double>();
+
         internal bool InitDevice(int deviceId, bool useExperimentalWasapi, bool exclusiveWasapi = false)
         {
             Debug.Assert(ThreadSafety.IsAudioThread);
@@ -150,7 +155,31 @@ namespace osu.Framework.Threading
                 freeWasapi();
 
             initialised_devices.Add(deviceId);
+            updateOutputLatency();
             return true;
+        }
+
+        /// <summary>
+        /// Works out what the output path currently costs. Under WASAPI the device buffer
+        /// is the honest number; otherwise BASS's own device buffer is the best available.
+        /// </summary>
+        private void updateOutputLatency()
+        {
+            try
+            {
+                if (globalMixerHandle.Value != null && BassWasapi.GetInfo(out WasapiInfo info) && info.Frequency > 0)
+                {
+                    // BufferLength is in samples, per channel.
+                    OutputLatency.Value = info.BufferLength / (double)info.Frequency / Math.Max(1, info.Channels) * 1000;
+                    return;
+                }
+
+                OutputLatency.Value = Bass.DeviceBufferLength;
+            }
+            catch
+            {
+                OutputLatency.Value = 0;
+            }
         }
 
         internal void FreeDevice(int deviceId)

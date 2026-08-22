@@ -114,6 +114,15 @@ namespace osu.Framework.Audio
         public readonly BindableBool UseExclusiveWasapi = new BindableBool();
 
         /// <summary>
+        /// Output latency of the current device in milliseconds, as reported by the audio
+        /// backend. Zero when it can't be determined. Exposed so the game can show what the
+        /// audio path is actually costing.
+        /// </summary>
+        public IBindable<double> OutputLatency => outputLatency;
+
+        private readonly Bindable<double> outputLatency = new Bindable<double>();
+
+        /// <summary>
         /// Volume of all samples played game-wide.
         /// </summary>
         public readonly BindableDouble VolumeSample = new BindableDouble(1)
@@ -192,6 +201,7 @@ namespace osu.Framework.Audio
             thread = audioThread;
 
             thread.RegisterManager(this);
+            outputLatency.BindTo(thread.OutputLatency);
 
             if (config != null)
             {

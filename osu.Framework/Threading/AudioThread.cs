@@ -130,7 +130,7 @@ namespace osu.Framework.Threading
         /// </summary>
         private readonly Bindable<int?> globalMixerHandle = new Bindable<int?>();
 
-        internal bool InitDevice(int deviceId, bool useExperimentalWasapi)
+        internal bool InitDevice(int deviceId, bool useExperimentalWasapi, bool exclusiveWasapi = false)
         {
             Debug.Assert(ThreadSafety.IsAudioThread);
             Trace.Assert(deviceId != -1); // The real device ID should always be used, as the -1 device has special cases which are hard to work with.
@@ -140,7 +140,7 @@ namespace osu.Framework.Threading
                 return false;
 
             if (useExperimentalWasapi)
-                attemptWasapiInitialisation();
+                attemptWasapiInitialisation(exclusiveWasapi);
             else
                 freeWasapi();
 
@@ -182,7 +182,7 @@ namespace osu.Framework.Threading
             }
         }
 
-        private bool attemptWasapiInitialisation()
+        private bool attemptWasapiInitialisation(bool exclusive)
         {
             if (RuntimeInfo.OS != RuntimeInfo.Platform.Windows)
                 return false;
@@ -219,10 +219,10 @@ namespace osu.Framework.Threading
 
             // To keep things in a sane state let's only keep one device initialised via wasapi.
             freeWasapi();
-            return initWasapi(wasapiDevice);
+            return initWasapi(wasapiDevice, exclusive);
         }
 
-        private bool initWasapi(int wasapiDevice)
+        private bool initWasapi(int wasapiDevice, bool exclusive)
         {
             // This is intentionally initialised inline and stored to a field.
             // If we don't do this, it gets GC'd away.
@@ -238,12 +238,32 @@ namespace osu.Framework.Threading
                 if (notify == WasapiNotificationType.DefaultOutput)
                 {
                     freeWasapi();
-                    initWasapi(device);
+                    initWasapi(device, exclusive);
                 }
             });
 
-            bool initialised = BassWasapi.Init(wasapiDevice, Procedure: wasapiProcedure, Flags: WasapiInitFlags.EventDriven | WasapiInitFlags.AutoFormat, Buffer: 0f, Period: float.Epsilon);
-            Logger.Log($"Initialising BassWasapi for device {wasapiDevice}...{(initialised ? "success!" : "FAILED")}");
+            var flags = WasapiInitFlags.EventDriven;
+            int frequency = 0;
+            int channels = 0;
+
+            if (exclusive)
+            {
+                // In exclusive mode the driver stops accepting whatever we hand it, so
+                // AutoFormat is not an option: a format it actually supports has to be
+                // negotiated up front, or Init just fails.
+                flags |= WasapiInitFlags.Exclusive;
+
+                if (!findExclusiveFormat(wasapiDevice, out frequency, out channels))
+                {
+                    Logger.Log($"No exclusive WASAPI format supported by device {wasapiDevice}", level: LogLevel.Important);
+                    return false;
+                }
+            }
+            else
+                flags |= WasapiInitFlags.AutoFormat;
+
+            bool initialised = BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: 0f, Period: float.Epsilon);
+            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} ({(exclusive ? $"exclusive {frequency}hz {channels}ch" : "shared")})...{(initialised ? "success!" : "FAILED")}");
 
             if (!initialised)
                 return false;
@@ -254,6 +274,36 @@ namespace osu.Framework.Threading
 
             BassWasapi.SetNotify(wasapiNotifyProcedure);
             return true;
+        }
+
+        /// <summary>
+        /// Finds a format the device will accept in exclusive mode. Its own mix format is
+        /// tried first (that is what it is running at, so it is the safest bet), then the
+        /// usual suspects.
+        /// </summary>
+        private static bool findExclusiveFormat(int wasapiDevice, out int frequency, out int channels)
+        {
+            var candidates = new List<(int frequency, int channels)>();
+
+            if (BassWasapi.GetDeviceInfo(wasapiDevice, out WasapiDeviceInfo info) && info.MixFrequency > 0 && info.MixChannels > 0)
+                candidates.Add((info.MixFrequency, info.MixChannels));
+
+            foreach (int rate in new[] { 48000, 44100, 96000, 192000 })
+                candidates.Add((rate, 2));
+
+            foreach ((int candidateFrequency, int candidateChannels) in candidates)
+            {
+                if (BassWasapi.CheckFormat(wasapiDevice, candidateFrequency, candidateChannels, WasapiInitFlags.Exclusive) == WasapiFormat.Unknown)
+                    continue;
+
+                frequency = candidateFrequency;
+                channels = candidateChannels;
+                return true;
+            }
+
+            frequency = 0;
+            channels = 0;
+            return false;
         }
 
         private void freeWasapi()

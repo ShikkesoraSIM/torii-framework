@@ -106,6 +106,14 @@ namespace osu.Framework.Audio
         public readonly BindableBool UseExperimentalWasapi = new BindableBool();
 
         /// <summary>
+        /// Whether WASAPI should take exclusive control of the output device.
+        /// This gives the lowest latency the hardware can do, at the cost of every other
+        /// application losing output on that device while this one holds it.
+        /// Only has an effect when <see cref="UseExperimentalWasapi"/> is also active.
+        /// </summary>
+        public readonly BindableBool UseExclusiveWasapi = new BindableBool();
+
+        /// <summary>
         /// Volume of all samples played game-wide.
         /// </summary>
         public readonly BindableDouble VolumeSample = new BindableDouble(1)
@@ -190,6 +198,7 @@ namespace osu.Framework.Audio
                 // attach config bindables
                 config.BindWith(FrameworkSetting.AudioDevice, AudioDevice);
                 config.BindWith(FrameworkSetting.AudioUseExperimentalWasapi, UseExperimentalWasapi);
+                config.BindWith(FrameworkSetting.AudioWasapiExclusive, UseExclusiveWasapi);
                 config.BindWith(FrameworkSetting.VolumeUniversal, Volume);
                 config.BindWith(FrameworkSetting.VolumeEffect, VolumeSample);
                 config.BindWith(FrameworkSetting.VolumeMusic, VolumeTrack);
@@ -197,6 +206,7 @@ namespace osu.Framework.Audio
 
             AudioDevice.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
             UseExperimentalWasapi.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
+            UseExclusiveWasapi.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
             // initCurrentDevice not required for changes to `GlobalMixerHandle` as it is only changed when experimental wasapi is toggled (handled above).
             GlobalMixerHandle.ValueChanged += handle => usingGlobalMixer.Value = handle.NewValue.HasValue;
 
@@ -433,6 +443,17 @@ namespace osu.Framework.Audio
             if (success || !UseExperimentalWasapi.Value)
                 return success;
 
+            // exclusive mode fails whenever something else already holds the device, so
+            // step down to shared before giving up on WASAPI altogether.
+            if (UseExclusiveWasapi.Value)
+            {
+                Logger.Log($"BASS device {device} failed to initialise with exclusive WASAPI, falling back to shared", level: LogLevel.Error);
+                UseExclusiveWasapi.Value = false;
+
+                if (attemptInit())
+                    return true;
+            }
+
             // in the case we're using experimental WASAPI, give a second chance of initialisation by forcefully disabling it.
             Logger.Log($"BASS device {device} failed to initialise with experimental WASAPI, disabling", level: LogLevel.Error);
             UseExperimentalWasapi.Value = false;
@@ -440,7 +461,7 @@ namespace osu.Framework.Audio
 
             bool attemptInit()
             {
-                bool innerSuccess = thread.InitDevice(device, UseExperimentalWasapi.Value);
+                bool innerSuccess = thread.InitDevice(device, UseExperimentalWasapi.Value, UseExclusiveWasapi.Value);
                 bool alreadyInitialised = Bass.LastError == Errors.Already;
 
                 if (alreadyInitialised)

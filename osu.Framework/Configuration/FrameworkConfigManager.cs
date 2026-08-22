@@ -33,6 +33,7 @@ namespace osu.Framework.Configuration
             SetDefault(FrameworkSetting.LastDisplayDevice, DisplayIndex.Default);
             SetDefault(FrameworkSetting.AudioDevice, string.Empty);
             SetDefault(FrameworkSetting.AudioUseExperimentalWasapi, false);
+            SetDefault(FrameworkSetting.AudioWasapiExclusive, false);
             SetDefault(FrameworkSetting.VolumeUniversal, 1.0, 0.0, 1.0, 0.01);
             SetDefault(FrameworkSetting.VolumeMusic, 1.0, 0.0, 1.0, 0.01);
             SetDefault(FrameworkSetting.VolumeEffect, 1.0, 0.0, 1.0, 0.01);
@@ -84,6 +85,7 @@ namespace osu.Framework.Configuration
 
         AudioDevice,
         AudioUseExperimentalWasapi,
+        AudioWasapiExclusive,
         VolumeUniversal,
         VolumeEffect,
         VolumeMusic,

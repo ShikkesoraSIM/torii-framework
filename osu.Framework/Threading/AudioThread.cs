@@ -204,6 +204,18 @@ namespace osu.Framework.Threading
         private double smoothedLatency;
         private double legacySessionEstimateMs;
 
+        private double latencyFloor;
+        private double lastQueueFlush;
+        private int creepSamples;
+        private int failedFlushes;
+
+        // cuanto se tiene que pasar de su propio piso para contar como creep, y cuantas
+        // lecturas seguidas hacen falta para no salir corriendo por un pico aislado.
+        private const double creep_threshold_ms = 3;
+        private const int creep_samples_needed = 3;
+        private const double flush_cooldown_ms = 4000;
+        private const int max_failed_flushes = 3;
+
         /// <summary>
         /// How far behind the audio output currently is, in milliseconds.
         ///
@@ -286,6 +298,70 @@ namespace osu.Framework.Threading
                 : latency;
 
             OutputLatency.Value = smoothedLatency;
+
+            if (wasapiExclusiveActive)
+                keepExclusiveQueueTight();
+        }
+
+        /// <summary>
+        /// Deshace el creep de latencia del modo exclusivo.
+        ///
+        /// Cada tironcito (un alt tab, un frame que tardo de mas) deja un poco mas de
+        /// audio encolado, y nadie lo saca nunca, asi que el retraso sube por escalones
+        /// y se queda arriba hasta que se reinicializa el dispositivo. Como la cola ES
+        /// el retraso, tirar lo encolado lo devuelve al valor de recien arrancado.
+        /// </summary>
+        private void keepExclusiveQueueTight()
+        {
+            if (smoothedLatency <= 0)
+                return;
+
+            // el piso es lo mejor que dio este dispositivo desde que arranco, que es
+            // justo el objetivo: volver a lo que marcaba recien inicializado.
+            if (latencyFloor <= 0 || smoothedLatency < latencyFloor)
+            {
+                latencyFloor = smoothedLatency;
+                creepSamples = 0;
+                return;
+            }
+
+            if (smoothedLatency < latencyFloor + creep_threshold_ms)
+            {
+                creepSamples = 0;
+                failedFlushes = 0;
+                return;
+            }
+
+            // un pico suelto no es creep; recien importa si se quedo arriba.
+            if (++creepSamples < creep_samples_needed)
+                return;
+
+            // si vaciar no lo baja, el piso viejo ya no existe (otra carga, otro formato):
+            // aceptamos el nuevo en vez de quedarnos chasqueando para siempre.
+            if (failedFlushes >= max_failed_flushes)
+            {
+                latencyFloor = smoothedLatency;
+                creepSamples = 0;
+                failedFlushes = 0;
+                return;
+            }
+
+            if (Clock.CurrentTime - lastQueueFlush < flush_cooldown_ms)
+                return;
+
+            lastQueueFlush = Clock.CurrentTime;
+            creepSamples = 0;
+            failedFlushes++;
+
+            // Stop(true) vacia lo encolado. el dispositivo no se cierra ni se reinicializa,
+            // solo vuelve a arrancar sin el retraso acumulado encima.
+            if (!BassWasapi.Stop(true))
+                return;
+
+            BassWasapi.Start();
+
+            // que la proxima lectura no arrastre el promedio de antes de vaciar.
+            smoothedLatency = 0;
         }
 
         internal void FreeDevice(int deviceId)
@@ -486,18 +562,15 @@ namespace osu.Framework.Threading
 
                     foreach (float period in periods)
                     {
-                        // el buffer es el techo de lo que se puede encolar, y lo encolado
-                        // ES la latencia: arranca vacio y se va llenando hasta el tope, asi
-                        // que dejarlo en el default del dispositivo termina en 30ms y ahi se
-                        // queda para siempre. pedimos el minimo que el modo por eventos
-                        // necesita y recien aflojamos si el driver lo rechaza.
-                        foreach (float buffer in bufferSizesFor(period))
+                        // el buffer va en el default del dispositivo. pedirle uno mas grande
+                        // es latencia pura, pero pedirle uno mas CHICO tambien sube el piso:
+                        // probamos con dos periodos y el driver termino alojando mas que su
+                        // propio default, de 7ms a 12ms. el que sabe cual es el minimo real
+                        // es el, no nosotros.
+                        if (BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: 0f, Period: period))
                         {
-                            if (!BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: buffer, Period: period))
-                                continue;
-
                             wasapiExclusiveActive = true;
-                            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch {format}, period {period}s, buffer {buffer}s)...success!");
+                            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch {format}, period {period}s)...success!");
                             return true;
                         }
                     }
@@ -508,20 +581,13 @@ namespace osu.Framework.Threading
             return false;
         }
 
-        /// <summary>
-        /// Buffer lengths to try for a given period, tightest first.
-        ///
-        /// Event driven mode needs two periods to have something to swap to while the
-        /// device drains the other, so that is the floor. Past that we widen once and
-        /// then hand the decision back to the driver, because landing on a bigger
-        /// buffer beats failing the format outright and falling back to shared mode.
-        /// </summary>
-        private static float[] bufferSizesFor(float period)
-            => period > 0 ? new[] { period * 2, period * 4, 0f } : new[] { 0f };
-
         private void freeWasapi()
         {
             wasapiExclusiveActive = false;
+            latencyFloor = 0;
+            smoothedLatency = 0;
+            creepSamples = 0;
+            failedFlushes = 0;
 
             if (globalMixerHandle.Value == null) return;
 

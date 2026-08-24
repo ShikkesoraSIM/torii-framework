@@ -486,12 +486,18 @@ namespace osu.Framework.Threading
 
                     foreach (float period in periods)
                     {
-                        // buffer stays at the device default on purpose: padding it out
-                        // would just be latency, which is the entire point of this mode.
-                        if (BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: 0f, Period: period))
+                        // el buffer es el techo de lo que se puede encolar, y lo encolado
+                        // ES la latencia: arranca vacio y se va llenando hasta el tope, asi
+                        // que dejarlo en el default del dispositivo termina en 30ms y ahi se
+                        // queda para siempre. pedimos el minimo que el modo por eventos
+                        // necesita y recien aflojamos si el driver lo rechaza.
+                        foreach (float buffer in bufferSizesFor(period))
                         {
+                            if (!BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: buffer, Period: period))
+                                continue;
+
                             wasapiExclusiveActive = true;
-                            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch {format}, period {period}s)...success!");
+                            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch {format}, period {period}s, buffer {buffer}s)...success!");
                             return true;
                         }
                     }
@@ -501,6 +507,17 @@ namespace osu.Framework.Threading
             Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive)...FAILED, no supported format ({Bass.LastError})", level: LogLevel.Important);
             return false;
         }
+
+        /// <summary>
+        /// Buffer lengths to try for a given period, tightest first.
+        ///
+        /// Event driven mode needs two periods to have something to swap to while the
+        /// device drains the other, so that is the floor. Past that we widen once and
+        /// then hand the decision back to the driver, because landing on a bigger
+        /// buffer beats failing the format outright and falling back to shared mode.
+        /// </summary>
+        private static float[] bufferSizesFor(float period)
+            => period > 0 ? new[] { period * 2, period * 4, 0f } : new[] { 0f };
 
         private void freeWasapi()
         {

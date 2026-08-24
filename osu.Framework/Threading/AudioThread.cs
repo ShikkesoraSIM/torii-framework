@@ -204,6 +204,13 @@ namespace osu.Framework.Threading
         private double smoothedLatency;
         private double legacySessionEstimateMs;
 
+        /// <summary>
+        /// Si se puede reparar la latencia ahora mismo. El juego la baja mientras se
+        /// esta jugando: vaciar la cola cuesta un saltito de audio, y en el medio de un
+        /// mapa eso descoloca peor que la latencia que estariamos arreglando.
+        /// </summary>
+        public readonly BindableBool AllowLatencyRepair = new BindableBool(true);
+
         private double latencyFloor;
         private double lastQueueFlush;
         private int creepSamples;
@@ -211,9 +218,9 @@ namespace osu.Framework.Threading
 
         // cuanto se tiene que pasar de su propio piso para contar como creep, y cuantas
         // lecturas seguidas hacen falta para no salir corriendo por un pico aislado.
-        private const double creep_threshold_ms = 3;
-        private const int creep_samples_needed = 3;
-        private const double flush_cooldown_ms = 4000;
+        private const double creep_threshold_ms = 8;
+        private const int creep_samples_needed = 10;
+        private const double flush_cooldown_ms = 15000;
         private const int max_failed_flushes = 3;
 
         /// <summary>
@@ -335,6 +342,14 @@ namespace osu.Framework.Threading
             // un pico suelto no es creep; recien importa si se quedo arriba.
             if (++creepSamples < creep_samples_needed)
                 return;
+
+            // jugando no se toca. lo dejamos confirmado para que se repare apenas se
+            // vuelva al menu, o sea antes del proximo intento y no en el medio de este.
+            if (!AllowLatencyRepair.Value)
+            {
+                creepSamples = creep_samples_needed;
+                return;
+            }
 
             // si vaciar no lo baja, el piso viejo ya no existe (otra carga, otro formato):
             // aceptamos el nuevo en vez de quedarnos chasqueando para siempre.

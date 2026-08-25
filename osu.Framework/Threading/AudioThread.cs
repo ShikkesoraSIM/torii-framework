@@ -631,7 +631,16 @@ namespace osu.Framework.Threading
                 }
             }
 
-            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive)...FAILED, no supported format ({Bass.LastError})", level: LogLevel.Important);
+            // el motivo real importa: Busy es "otra app tiene el device" y NotAvailable
+            // suele ser el checkbox de exclusivo apagado en Windows, no un formato malo.
+            string reason = Bass.LastError switch
+            {
+                Errors.Busy => @"the device is in use by another application (Busy)",
+                Errors.NotAvailable => @"Windows is blocking exclusive access (NotAvailable)",
+                _ => $@"no supported format ({Bass.LastError})",
+            };
+
+            Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive)...FAILED, {reason}", level: LogLevel.Important);
             return false;
         }
 

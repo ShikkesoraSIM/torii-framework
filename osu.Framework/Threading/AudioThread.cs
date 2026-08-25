@@ -318,6 +318,45 @@ namespace osu.Framework.Threading
         /// y se queda arriba hasta que se reinicializa el dispositivo. Como la cola ES
         /// el retraso, tirar lo encolado lo devuelve al valor de recien arrancado.
         /// </summary>
+        /// <summary>
+        /// Torii: vacia la cola del exclusivo AHORA si esta por encima de su piso.
+        /// Lo llama el juego en la pantalla de carga, justo antes del gameplay:
+        /// adentro la reparacion automatica esta apagada a proposito, asi que este
+        /// es el ultimo momento util para no arrastrar una cola inflada (y su
+        /// latencia) durante el mapa entero. El saltito del flush cae en la carga,
+        /// donde no molesta.
+        /// </summary>
+        /// <param name="onFlushed">se invoca EN EL HILO DE AUDIO solo si de verdad se vacio.</param>
+        public void FlushExclusiveQueueNow(Action? onFlushed = null)
+        {
+            Scheduler.Add(() =>
+            {
+                if (!wasapiExclusiveActive)
+                    return;
+
+                if (latencyFloor <= 0 || smoothedLatency <= 0)
+                    return;
+
+                // margen chico a proposito (no el de la reparacion en caliente): aca no
+                // hay play en curso que interrumpir, cualquier mejora real vale.
+                if (smoothedLatency < latencyFloor + pre_gameplay_flush_margin_ms)
+                    return;
+
+                lastQueueFlush = Clock.CurrentTime;
+                creepSamples = 0;
+
+                if (!BassWasapi.Stop(true))
+                    return;
+
+                BassWasapi.Start();
+                smoothedLatency = 0;
+
+                onFlushed?.Invoke();
+            });
+        }
+
+        private const double pre_gameplay_flush_margin_ms = 2;
+
         private void keepExclusiveQueueTight()
         {
             if (smoothedLatency <= 0)

@@ -112,12 +112,26 @@ namespace osu.Framework.Graphics
                 SharedData.DrawVersion = GetDrawVersion();
             }
 
-            BindTextureShader(renderer);
+            // torii: si el resultado no se ve, no lo mandes.
+            //
+            // Un buffer que existe SOLO para que otros lo sampleen (el frost compartido de los
+            // paneles de song select va con AlwaysPresent + Alpha 0) igual estaba blitteando la
+            // pantalla entera en alfa 0, en cada cuadro, para pintar exactamente nada. Y este
+            // bloque esta afuera del if (RequiresRedraw) de arriba, o sea que ni cachear el
+            // buffer se lo saca de encima.
+            //
+            // El chequeo del blending es necesario y no cosmetico: BlendingParameters.None tiene
+            // Source = One, y ahi un alfa 0 SI se ve (pisa el destino con el color tal cual).
+            // Mixture y Additive tienen las dos Source = SrcAlpha, donde alfa 0 es invisible.
+            if (DrawColourInfo.Colour.MaxAlpha > 0 || DrawColourInfo.Blending.Source != BlendingType.SrcAlpha)
+            {
+                BindTextureShader(renderer);
 
-            base.Draw(renderer);
-            DrawContents(renderer);
+                base.Draw(renderer);
+                DrawContents(renderer);
 
-            UnbindTextureShader(renderer);
+                UnbindTextureShader(renderer);
+            }
         }
 
         /// <summary>

@@ -18,6 +18,22 @@ namespace osu.Framework.IO.Stores
 {
     public class FontStore : TextureStore, ITexturedGlyphLookupStore
     {
+        /// <summary>
+        /// Torii: atlas propio y mas grande para los glifos.
+        /// </summary>
+        /// <remarks>
+        /// Con el default de 1024 los glifos de una misma pantalla caen en paginas
+        /// distintas, y cada salto de pagina corta el lote de dibujo. Medido con la traza
+        /// atribuida en el menu principal: SpriteText causaba 146 cambios de textura POR
+        /// CUADRO contra 1,4 del upstream, y eso solo explicaba el gap entero de draw calls
+        /// (~160 binds por cuadro contra 20).
+        ///
+        /// Pasa aca y no subiendo el limite global a proposito: upstream dejo el atlas
+        /// general en 1024 porque el mipmapping propio de GL se degrada mas arriba. Los
+        /// glifos no llevan mipmaps, asi que este atlas puede ser grande sin pagar eso.
+        /// </remarks>
+        private const int font_atlas_size = 4096;
+
         private readonly List<IGlyphStore> glyphStores = new List<IGlyphStore>();
 
         private readonly List<ITexturedGlyphLookupStore> nestedFontStores = new List<ITexturedGlyphLookupStore>();
@@ -56,7 +72,7 @@ namespace osu.Framework.IO.Stores
 
         internal FontStore(IRenderer renderer, IResourceStore<TextureUpload> store = null, float scaleAdjust = 100, bool useAtlas = false, Storage cacheStorage = null,
                            TextureFilteringMode filteringMode = TextureFilteringMode.Linear)
-            : base(renderer, store, scaleAdjust: scaleAdjust, useAtlas: useAtlas, filteringMode: filteringMode)
+            : base(renderer, store, scaleAdjust: scaleAdjust, useAtlas: useAtlas, filteringMode: filteringMode, atlasSize: font_atlas_size)
         {
             this.cacheStorage = cacheStorage;
         }

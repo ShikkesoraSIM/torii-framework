@@ -140,6 +140,18 @@ namespace osu.Framework.Threading
         /// <summary>Whether the live wasapi session, if any, holds the device exclusively.</summary>
         private bool wasapiExclusiveActive;
 
+        /// <summary>
+        /// Periodo pedido para el modo exclusivo, en ms. 0 = automatico. Lo setea
+        /// <see cref="Audio.AudioManager"/> antes de inicializar.
+        /// </summary>
+        public double ExclusiveUpdatePeriodMs;
+
+        /// <summary>
+        /// Periodo que el dispositivo termino aceptando, en ms, o 0 si no hay
+        /// exclusivo activo. Para poder mostrarlo en los ajustes.
+        /// </summary>
+        public double ActiveExclusivePeriodMs { get; private set; }
+
         internal bool InitDevice(int deviceId, bool useExperimentalWasapi, bool exclusiveWasapi = false)
         {
             Debug.Assert(ThreadSafety.IsAudioThread);
@@ -588,9 +600,23 @@ namespace osu.Framework.Threading
             }
 
             // the device's own minimum is the lowest latency on offer; 0 lets it decide.
-            float[] periods = info.MinimumUpdatePeriod > 0
-                ? new[] { (float)info.MinimumUpdatePeriod, (float)info.DefaultUpdatePeriod, 0f }
-                : new[] { 0f };
+            var periodList = new List<float>();
+
+            // Lo pedido va PRIMERO, pero los candidatos de siempre quedan detras: si el
+            // dispositivo no acepta ese periodo, se cae al comportamiento normal en vez
+            // de quedarse sin audio. El valor viene en ms y BASS lo espera en segundos.
+            if (ExclusiveUpdatePeriodMs > 0)
+                periodList.Add((float)(ExclusiveUpdatePeriodMs / 1000.0));
+
+            if (info.MinimumUpdatePeriod > 0)
+            {
+                periodList.Add((float)info.MinimumUpdatePeriod);
+                periodList.Add((float)info.DefaultUpdatePeriod);
+            }
+
+            periodList.Add(0f);
+
+            float[] periods = periodList.ToArray();
 
             // Two passes: floating point formats first. Everything upstream of here is
             // float, so an integer format means a conversion, and a 16 bit one without
@@ -624,6 +650,7 @@ namespace osu.Framework.Threading
                         if (BassWasapi.Init(wasapiDevice, frequency, channels, Procedure: wasapiProcedure, Flags: flags, Buffer: 0f, Period: period))
                         {
                             wasapiExclusiveActive = true;
+                            ActiveExclusivePeriodMs = period * 1000.0;
                             Logger.Log($"Initialising BassWasapi for device {wasapiDevice} (exclusive {frequency}hz {channels}ch {format}, period {period}s)...success!");
                             return true;
                         }

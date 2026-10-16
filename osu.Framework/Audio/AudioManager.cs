@@ -208,6 +208,8 @@ namespace osu.Framework.Audio
         private readonly Lazy<TrackStore> globalTrackStore;
         private readonly Lazy<SampleStore> globalSampleStore;
 
+        private readonly ResourceStore<byte[]> sampleByteStore;
+
         /// <summary>
         /// Constructs an AudioStore given a track resource store, and a sample resource store.
         /// </summary>
@@ -218,6 +220,7 @@ namespace osu.Framework.Audio
         public AudioManager(AudioThread audioThread, ResourceStore<byte[]> trackStore, ResourceStore<byte[]> sampleStore, [CanBeNull] FrameworkConfigManager config)
         {
             thread = audioThread;
+            sampleByteStore = sampleStore;
 
             thread.RegisterManager(this);
             outputLatency.BindTo(thread.OutputLatency);
@@ -349,7 +352,6 @@ namespace osu.Framework.Audio
 
         /// <summary>
         /// Obtains the <see cref="SampleStore"/> corresponding to a given resource store.
-        /// Returns the global <see cref="SampleStore"/> if no resource store is passed.
         /// </summary>
         /// <remarks>
         /// By default, <c>.wav</c> and <c>.ogg</c> extensions will be automatically appended to lookups on the returned store
@@ -358,12 +360,15 @@ namespace osu.Framework.Audio
         /// </remarks>
         /// <param name="store">The <see cref="IResourceStore{T}"/> of which to retrieve the <see cref="SampleStore"/>.</param>
         /// <param name="mixer">The <see cref="AudioMixer"/> to use for samples created by this store. Defaults to the global <see cref="SampleMixer"/>.</param>
-        public ISampleStore GetSampleStore(IResourceStore<byte[]> store = null, AudioMixer mixer = null)
+        /// <param name="applyGlobalAdjustments">Whether the game-wide effect volume adjustment (and any other adjustments applied to <see cref="Samples"/>) should be applied to samples retrieved from the resultant store.</param>
+        public ISampleStore GetSampleStore(IResourceStore<byte[]> store = null, AudioMixer mixer = null, bool applyGlobalAdjustments = true)
         {
-            if (store == null) return globalSampleStore.Value;
+            SampleStore sm = new SampleStore(store ?? sampleByteStore, mixer ?? SampleMixer);
+            if (applyGlobalAdjustments)
+                globalSampleStore.Value.AddItem(sm);
+            else
+                AddItem(sm);
 
-            SampleStore sm = new SampleStore(store, mixer ?? SampleMixer);
-            globalSampleStore.Value.AddItem(sm);
             return sm;
         }
 
@@ -452,6 +457,10 @@ namespace osu.Framework.Audio
 
             // without this, if bass falls back to directsound legacy mode the audio playback offset will be way off.
             Bass.Configure(ManagedBass.Configuration.TruePlayPosition, 0);
+
+            // Unicode device information allows correct display of devices with UTF-8 content in the device list.
+            // See https://www.radio42.com/bass/help/html/3490e2bc-7f3a-9135-3d24-ee519029f737.htm (value 42).
+            Bass.Configure(ManagedBass.Configuration.UnicodeDeviceInformation, true);
 
             // Set BASS_IOS_SESSION_DISABLE here to leave session configuration in our hands (see iOS project).
             Bass.Configure(ManagedBass.Configuration.IOSSession, 16);

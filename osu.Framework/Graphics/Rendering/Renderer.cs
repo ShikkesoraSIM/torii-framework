@@ -545,7 +545,7 @@ namespace osu.Framework.Graphics.Rendering
                 compensatedScissor.Y = Viewport.Height - scissor.Bottom;
 
             FlushCurrentBatch(FlushBatchSource.SetScissor);
-            SetScissorImplementation(compensatedScissor);
+            SetScissorImplementation(compensatedScissor.Intersect(Viewport));
             // do not expose the implementation detail of flipping the scissor box to Scissor readers.
             Scissor = scissor;
         }
@@ -951,7 +951,7 @@ namespace osu.Framework.Graphics.Rendering
             while (FrameBuffer == frameBuffer)
                 UnbindFrameBuffer(frameBuffer);
 
-            ScheduleDisposal(DeleteFrameBufferImplementation, frameBuffer);
+            DeleteFrameBufferImplementation(frameBuffer);
         }
 
         protected abstract void DeleteFrameBufferImplementation(IFrameBuffer frameBuffer);
@@ -1108,7 +1108,7 @@ namespace osu.Framework.Graphics.Rendering
 
         #region Factory
 
-        public abstract IFrameBuffer CreateFrameBuffer(RenderBufferFormat[]? renderBufferFormats = null, TextureFilteringMode filteringMode = TextureFilteringMode.Linear);
+        public abstract IFrameBuffer CreateFrameBuffer(TexturePixelFormat textureFormat = TexturePixelFormat.R8G8B8A8Float, RenderBufferFormat[]? renderBufferFormats = null, TextureFilteringMode filteringMode = TextureFilteringMode.Linear);
 
         /// <inheritdoc cref="IRenderer.CreateShaderPart"/>
         protected abstract IShaderPart CreateShaderPart(IShaderStore store, string name, byte[]? rawData, ShaderPartType partType);

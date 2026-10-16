@@ -850,6 +850,7 @@ namespace osu.Framework.Platform
                 case RuntimeInfo.Platform.Windows:
                     yield return RendererType.Direct3D11;
                     yield return RendererType.Direct3D11_DXVK;
+                    yield return RendererType.Vulkan;
                     yield return RendererType.OpenGL;
                     yield return RendererType.OpenGL_Zink;
                     yield return RendererType.Deferred_Direct3D11;
@@ -858,6 +859,7 @@ namespace osu.Framework.Platform
                     break;
 
                 case RuntimeInfo.Platform.Linux:
+                    yield return RendererType.Vulkan;
                     yield return RendererType.OpenGL;
                     yield return RendererType.Deferred_OpenGL;
                     yield return RendererType.Deferred_Vulkan;

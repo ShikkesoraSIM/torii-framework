@@ -104,6 +104,11 @@ namespace osu.Framework.Graphics
 
         protected internal static void DrawOther(DrawNode node, IRenderer renderer)
         {
+            // Torii: anotar de QUE drawable viene lo que se va a dibujar, para poder
+            // atribuir cada cambio de textura. Solo cuesta algo mientras se esta grabando.
+            if (Rendering.TextureBindTrace.Recording)
+                Rendering.TextureBindTrace.CurrentSource = node.Source?.GetType().Name;
+
             renderer.EnterDrawNode(node);
             node.Draw(renderer);
             renderer.ExitDrawNode();

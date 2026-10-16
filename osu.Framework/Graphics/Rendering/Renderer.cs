@@ -1,4 +1,4 @@
-// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
@@ -828,6 +828,7 @@ namespace osu.Framework.Graphics.Rendering
                 return true;
             }
 
+            TextureBindTrace.Record(texture, "textura distinta");
             FlushCurrentBatch(FlushBatchSource.BindTexture);
 
             if (!SetTextureImplementation(texture, unit))
@@ -849,6 +850,7 @@ namespace osu.Framework.Graphics.Rendering
         {
             if (wrapModeS != CurrentWrapModeS)
             {
+                TextureBindTrace.RecordWrap("wrap S cambio");
                 FlushCurrentBatch(FlushBatchSource.BindTexture);
 
                 CurrentWrapModeS = wrapModeS;
@@ -857,6 +859,7 @@ namespace osu.Framework.Graphics.Rendering
 
             if (wrapModeT != CurrentWrapModeT)
             {
+                TextureBindTrace.RecordWrap("wrap T cambio");
                 FlushCurrentBatch(FlushBatchSource.BindTexture);
 
                 CurrentWrapModeT = wrapModeT;

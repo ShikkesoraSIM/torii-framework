@@ -29,6 +29,12 @@ namespace osu.Framework.Configuration
         [Description("OpenGL")]
         OpenGL,
 
+        [Description("Direct3D 11 (DXVK / Vulkan) [Nova]")]
+        Direct3D11_DXVK = 16,
+
+        [Description("OpenGL (Zink / Vulkan) [Nova]")]
+        OpenGL_Zink = 17,
+
         [Description("Metal (Experimental)")]
         Deferred_Metal = 32,
 

@@ -117,6 +117,22 @@ namespace osu.Framework.Audio
         public readonly BindableBool UseExclusiveWasapi = new BindableBool();
 
         /// <summary>
+        /// Periodo de update a pedirle al dispositivo en modo exclusivo, en ms.
+        /// 0 = automatico (el minimo que declare el dispositivo).
+        /// </summary>
+        /// <remarks>
+        /// El minimo no siempre es lo mejor. Un headset inalambrico corriendo a 3ms
+        /// puede resetearse cada tantos minutos, y en exclusivo eso no es un salto de
+        /// audio: el juego posee el dispositivo, asi que cuando desaparece hay que
+        /// reconstruir todo el stack y se congela unos segundos. Subir el periodo
+        /// cuesta un poco de latencia y compra estabilidad.
+        ///
+        /// Si el valor pedido no lo acepta el dispositivo, el init sigue con los
+        /// candidatos de siempre: pedir un periodo raro nunca deja sin audio.
+        /// </remarks>
+        public readonly BindableDouble ExclusiveUpdatePeriodMs = new BindableDouble();
+
+        /// <summary>
         /// Output latency of the current device in milliseconds, as reported by the audio
         /// backend. Zero when it can't be determined. Exposed so the game can show what the
         /// audio path is actually costing.
@@ -220,6 +236,8 @@ namespace osu.Framework.Audio
             AudioDevice.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
             UseExperimentalWasapi.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
             UseExclusiveWasapi.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
+            // Cambiar el periodo obliga a reinicializar: es un parametro del init.
+            ExclusiveUpdatePeriodMs.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
             // initCurrentDevice not required for changes to `GlobalMixerHandle` as it is only changed when experimental wasapi is toggled (handled above).
             GlobalMixerHandle.ValueChanged += handle => usingGlobalMixer.Value = handle.NewValue.HasValue;
 
@@ -484,6 +502,7 @@ namespace osu.Framework.Audio
 
             bool attemptInit()
             {
+                thread.ExclusiveUpdatePeriodMs = ExclusiveUpdatePeriodMs.Value;
                 bool innerSuccess = thread.InitDevice(device, UseExperimentalWasapi.Value, UseExclusiveWasapi.Value);
                 bool alreadyInitialised = Bass.LastError == Errors.Already;
 

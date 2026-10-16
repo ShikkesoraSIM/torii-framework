@@ -1,4 +1,4 @@
-﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 #nullable disable
@@ -848,8 +848,10 @@ namespace osu.Framework.Platform
             {
                 case RuntimeInfo.Platform.Windows:
                     yield return RendererType.Direct3D11;
-                    yield return RendererType.Deferred_Direct3D11;
+                    yield return RendererType.Direct3D11_DXVK;
                     yield return RendererType.OpenGL;
+                    yield return RendererType.OpenGL_Zink;
+                    yield return RendererType.Deferred_Direct3D11;
                     yield return RendererType.Deferred_Vulkan;
 
                     break;
@@ -919,9 +921,10 @@ namespace osu.Framework.Platform
                     switch (type)
                     {
                         case RendererType.OpenGL:
+                        case RendererType.OpenGL_Zink:
                             // Use the legacy GL renderer. This is basically guaranteed to support all platforms
                             // and performs better than the Veldrid-GL renderer due to reduction in allocs.
-                            SetupRendererAndWindow(new GLRenderer(), GraphicsSurfaceType.OpenGL);
+                            SetupRendererAndWindow(CreateGLRenderer(), GraphicsSurfaceType.OpenGL);
                             break;
 
                         case RendererType.Deferred_Metal:
@@ -970,11 +973,13 @@ namespace osu.Framework.Platform
                     surface = GraphicsSurfaceType.Vulkan;
                     break;
 
+                case RendererType.Direct3D11_DXVK:
                 case RendererType.Deferred_Direct3D11:
                 case RendererType.Direct3D11:
                     surface = GraphicsSurfaceType.Direct3D11;
                     break;
 
+                case RendererType.OpenGL_Zink:
                 case RendererType.Deferred_OpenGL:
                 case RendererType.OpenGL:
                     surface = GraphicsSurfaceType.OpenGL;

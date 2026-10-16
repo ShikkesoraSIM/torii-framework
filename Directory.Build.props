@@ -1,4 +1,4 @@
-﻿<!-- Contains required properties for osu!framework projects. -->
+<!-- Contains required properties for osu!framework projects. -->
 <Project>
   <PropertyGroup Label="C#">
     <LangVersion>12.0</LangVersion>
@@ -15,7 +15,7 @@
     </None>
   </ItemGroup>
   <ItemGroup Label="Resources">
-    <EmbeddedResource Include="Resources\**\*.*" />
+    <EmbeddedResource Include="Resources\**\*.*" Exclude="Resources\Fonts\**\LICENSE.txt" Link="Resources\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup Label="Icon">
     <None Include="$(MSBuildThisFileDirectory)assets\nupkg icon.png">

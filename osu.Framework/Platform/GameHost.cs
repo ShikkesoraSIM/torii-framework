@@ -861,6 +861,7 @@ namespace osu.Framework.Platform
                 case RuntimeInfo.Platform.Linux:
                     yield return RendererType.Vulkan;
                     yield return RendererType.OpenGL;
+                    yield return RendererType.OpenGL_Zink;
                     yield return RendererType.Deferred_OpenGL;
                     yield return RendererType.Deferred_Vulkan;
 

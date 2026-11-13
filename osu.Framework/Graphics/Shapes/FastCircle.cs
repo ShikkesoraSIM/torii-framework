@@ -84,6 +84,10 @@ namespace osu.Framework.Graphics.Shapes
             {
                 base.Draw(renderer);
 
+                // Torii: nothing to draw, and the edge smoothing below would divide by zero.
+                if (drawRectangle.Z <= 0 || drawRectangle.W <= 0 || screenSpaceDrawQuad.Width <= 0 || screenSpaceDrawQuad.Height <= 0)
+                    return;
+
                 if (!renderer.BindTexture(renderer.WhitePixel))
                     return;
 

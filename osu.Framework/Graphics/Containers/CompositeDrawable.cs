@@ -1185,7 +1185,20 @@ namespace osu.Framework.Graphics.Containers
                     }
                 }
 
+                // A proxied drawable is drawn where its proxy is, so its changes don't count towards this subtree (see DrawNodeApplications).
+                int appliedBefore = DrawNodeApplications;
+                int generatedBefore = DrawNodesGenerated;
+
                 DrawNode next = drawable.GenerateDrawNodeSubtree(frame, treeIndex, forceNewDrawNode);
+
+                if (drawable.HasProxy)
+                {
+                    DrawNodeApplications = appliedBefore;
+                    DrawNodesGenerated = generatedBefore;
+                }
+                else if (next != null)
+                    DrawNodesGenerated++;
+
                 if (next == null)
                     continue;
 

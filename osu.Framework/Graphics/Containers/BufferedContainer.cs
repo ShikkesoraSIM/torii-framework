@@ -319,7 +319,41 @@ namespace osu.Framework.Graphics.Containers
         }
 
         private long childrenUpdateVersion = -1;
-        protected override bool RequiresChildrenUpdate => base.RequiresChildrenUpdate && childrenUpdateVersion != updateVersion;
+        protected override bool RequiresChildrenUpdate => base.RequiresChildrenUpdate && (TrackSubtreeChanges || childrenUpdateVersion != updateVersion);
+
+        /// <summary>
+        /// Torii: with a cached frame buffer, keep children updating and redraw the buffer whenever anything drawn inside it changes,
+        /// at any depth.
+        /// </summary>
+        /// <remarks>
+        /// By default a cached buffer stops updating its children and is only redrawn on invalidations it receives directly, which
+        /// only come from its immediate children. That suits static content, but deeper changes (hover effects, items loading in,
+        /// scrolling) are missed and anything driven by updates stalls. With this set, changes are detected while generating the
+        /// children's draw nodes (a drawable whose draw state changed has its draw node re-applied, and drawables appearing or
+        /// disappearing change the number of draw nodes), so caching only saves the drawing.
+        /// </remarks>
+        public bool TrackSubtreeChanges { get; init; }
+
+        private int lastSubtreeDrawNodeCount = -1;
+
+        internal override DrawNode GenerateDrawNodeSubtree(ulong frame, int treeIndex, bool forceNewDrawNode)
+        {
+            if (!TrackSubtreeChanges || !UsingCachedFrameBuffer)
+                return base.GenerateDrawNodeSubtree(frame, treeIndex, forceNewDrawNode);
+
+            int appliedBefore = DrawNodeApplications;
+            int generatedBefore = DrawNodesGenerated;
+
+            DrawNode node = base.GenerateDrawNodeSubtree(frame, treeIndex, forceNewDrawNode);
+
+            int generated = DrawNodesGenerated - generatedBefore;
+
+            if (node is BufferedContainerDrawNode bufferedNode && (DrawNodeApplications != appliedBefore || generated != lastSubtreeDrawNodeCount))
+                bufferedNode.ForceRedraw(++updateVersion);
+
+            lastSubtreeDrawNodeCount = generated;
+            return node;
+        }
 
         protected override void Update()
         {

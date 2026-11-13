@@ -1911,10 +1911,22 @@ namespace osu.Framework.Graphics
             {
                 node.ApplyState();
                 FrameStatistics.Increment(StatisticsCounterType.DrawNodeAppl);
+                DrawNodeApplications++;
             }
 
             return node;
         }
+
+        /// <summary>
+        /// Torii: running counts of draw node applications and of draw nodes added to composite draw nodes, on the thread generating draw
+        /// nodes. Used to detect changes anywhere in a subtree (see <see cref="BufferedContainer{T}.TrackSubtreeChanges"/>).
+        /// </summary>
+        [ThreadStatic]
+        internal static int DrawNodeApplications;
+
+        /// <inheritdoc cref="DrawNodeApplications"/>
+        [ThreadStatic]
+        internal static int DrawNodesGenerated;
 
         /// <summary>
         /// Creates a draw node capable of containing all information required to draw this drawable.

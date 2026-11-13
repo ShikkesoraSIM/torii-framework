@@ -43,9 +43,14 @@ namespace osu.Framework.Android
 
         protected override void Main()
         {
-            var host = new AndroidGameHost(this);
+            var host = CreateHost();
             host.Run(CreateGame());
         }
+
+        /// <summary>
+        /// Creates the host which runs the game. Override to use a specialised host (e.g. an immersive OpenXR host).
+        /// </summary>
+        protected virtual AndroidGameHost CreateHost() => new AndroidGameHost(this);
 
         protected override void OnCreate(Bundle? savedInstanceState)
         {

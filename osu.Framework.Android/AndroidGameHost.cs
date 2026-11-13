@@ -26,6 +26,8 @@ namespace osu.Framework.Android
     {
         private readonly AndroidGameActivity activity;
 
+        protected AndroidGameActivity Activity => activity;
+
         private readonly ChoreographerVsyncWaiter vsyncWaiter = new ChoreographerVsyncWaiter();
 
         public AndroidGameHost(AndroidGameActivity activity)

@@ -59,6 +59,12 @@ namespace osu.Framework.Graphics.Rendering
 
         public ulong FrameIndex { get; private set; }
 
+        /// <summary>
+        /// Torii: the colour the back buffer is cleared to at the start of each frame. XR hosts clear to transparent so the window
+        /// composites over other layers.
+        /// </summary>
+        internal Color4 BackbufferClearColour { get; set; } = Color4.Black;
+
         public ref readonly MaskingInfo CurrentMaskingInfo => ref currentMaskingInfo;
 
         public RectangleI Viewport { get; private set; }
@@ -265,7 +271,7 @@ namespace osu.Framework.Graphics.Rendering
             PushDepthInfo(DepthInfo.Default);
             PushStencilInfo(StencilInfo.Default);
 
-            Clear(new ClearInfo(Color4.Black));
+            Clear(new ClearInfo(BackbufferClearColour));
 
             freeUnusedVertexBuffers();
             vboInUse.Value = vertexBuffersInUse.Count;

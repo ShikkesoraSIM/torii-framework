@@ -229,7 +229,7 @@ namespace osu.Framework.Platform.SDL3
 
         private readonly BindableBool isActive = new BindableBool();
 
-        public IBindable<bool> IsActive => isActive;
+        public virtual IBindable<bool> IsActive => isActive;
 
         private readonly BindableBool cursorInWindow = new BindableBool();
 
@@ -284,7 +284,7 @@ namespace osu.Framework.Platform.SDL3
         /// <summary>
         /// Returns the drawable area, after scaling.
         /// </summary>
-        public Size ClientSize => new Size((int)(Size.Width * Scale), (int)(Size.Height * Scale));
+        public virtual Size ClientSize => new Size((int)(Size.Width * Scale), (int)(Size.Height * Scale));
 
         public float Scale { get; private set; } = 1;
 

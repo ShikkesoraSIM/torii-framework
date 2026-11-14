@@ -7,8 +7,9 @@ void main()
 {
     {{ real_main }}(); // Invoke real main func
 
+    // From OpenGL's depth range (-w to w) to 0 to w. (With perspective w isn't 1.)
     if (g_IsDepthRangeZeroToOne)
-        gl_Position.z = gl_Position.z / 2.0 + 0.5;
+        gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
 
     // When the device's texture coordinates are inverted, and when we are outputting to a framebuffer,
     // we should ensure that the framebuffer output is also inverted so that it's treated as a normal texture

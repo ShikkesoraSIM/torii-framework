@@ -122,7 +122,7 @@ namespace osu.Framework.Platform.OpenXR
             this.eyeSize = eyeSize;
 
             // Setting up changes GL state the framework caches (e.g. the clear colour, via the 1x1 targets' initial clears).
-            var state = GLState.Capture();
+            var state = GLStateSnapshot.Capture();
 
             sceneProgram = compileProgram(scene_fragment);
             luminanceProgram = compileProgram(luminance_fragment);
@@ -208,7 +208,7 @@ namespace osu.Framework.Platform.OpenXR
             float dt = lastRenderTime == 0 ? 0 : Math.Clamp((displayTime - lastRenderTime) / 1e9f, 0, 0.1f);
             lastRenderTime = displayTime;
 
-            var state = GLState.Capture();
+            var state = GLStateSnapshot.Capture();
 
             try
             {
@@ -249,7 +249,7 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public void DrawInto(in XrView view)
         {
-            var state = GLState.Capture();
+            var state = GLStateSnapshot.Capture();
 
             try
             {
@@ -486,89 +486,6 @@ namespace osu.Framework.Platform.OpenXR
         {
             foreach (var eye in eyes)
                 eye?.Dispose();
-        }
-
-        /// <summary>
-        /// Snapshot of the GL state this renderer changes, restored afterwards so the framework's cached GL state stays valid.
-        /// </summary>
-        private unsafe struct GLState
-        {
-            private int program, vertexArray, arrayBuffer, framebuffer, activeTexture;
-            private int texture0, texture1, texture2, texture3;
-            private int viewportX, viewportY, viewportW, viewportH;
-            private bool scissor, depthTest, blend, cullFace;
-            private bool maskR, maskG, maskB, maskA;
-            private float clearR, clearG, clearB, clearA;
-
-            public static GLState Capture()
-            {
-                var s = new GLState();
-                GL.GetInteger(GetPName.CurrentProgram, out s.program);
-                GL.GetInteger(GetPName.VertexArrayBinding, out s.vertexArray);
-                GL.GetInteger(GetPName.ArrayBufferBinding, out s.arrayBuffer);
-                GL.GetInteger(GetPName.FramebufferBinding, out s.framebuffer);
-                GL.GetInteger(GetPName.ActiveTexture, out s.activeTexture);
-
-                GL.ActiveTexture(TextureUnit.Texture0);
-                GL.GetInteger(GetPName.TextureBinding2D, out s.texture0);
-                GL.ActiveTexture(TextureUnit.Texture1);
-                GL.GetInteger(GetPName.TextureBinding2D, out s.texture1);
-                GL.ActiveTexture(TextureUnit.Texture2);
-                GL.GetInteger(GetPName.TextureBinding2D, out s.texture2);
-                GL.ActiveTexture(TextureUnit.Texture3);
-                GL.GetInteger(GetPName.TextureBinding2D, out s.texture3);
-                GL.ActiveTexture((TextureUnit)s.activeTexture);
-
-                int* viewport = stackalloc int[4];
-                GL.GetInteger(GetPName.Viewport, viewport);
-                (s.viewportX, s.viewportY, s.viewportW, s.viewportH) = (viewport[0], viewport[1], viewport[2], viewport[3]);
-
-                s.scissor = GL.IsEnabled(EnableCap.ScissorTest);
-                s.depthTest = GL.IsEnabled(EnableCap.DepthTest);
-                s.blend = GL.IsEnabled(EnableCap.Blend);
-                s.cullFace = GL.IsEnabled(EnableCap.CullFace);
-
-                bool* colorMask = stackalloc bool[4];
-                GL.GetBoolean(GetPName.ColorWritemask, colorMask);
-                (s.maskR, s.maskG, s.maskB, s.maskA) = (colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
-
-                float* clearColour = stackalloc float[4];
-                GL.GetFloat(GetPName.ColorClearValue, clearColour);
-                (s.clearR, s.clearG, s.clearB, s.clearA) = (clearColour[0], clearColour[1], clearColour[2], clearColour[3]);
-                return s;
-            }
-
-            public readonly void Restore()
-            {
-                GL.UseProgram(program);
-                GL.BindVertexArray(vertexArray);
-                GL.BindBuffer(BufferTarget.ArrayBuffer, arrayBuffer);
-                GL.BindFramebuffer(FramebufferTarget.Framebuffer, framebuffer);
-
-                GL.ActiveTexture(TextureUnit.Texture3);
-                GL.BindTexture(TextureTarget.Texture2D, texture3);
-                GL.ActiveTexture(TextureUnit.Texture2);
-                GL.BindTexture(TextureTarget.Texture2D, texture2);
-                GL.ActiveTexture(TextureUnit.Texture1);
-                GL.BindTexture(TextureTarget.Texture2D, texture1);
-                GL.ActiveTexture(TextureUnit.Texture0);
-                GL.BindTexture(TextureTarget.Texture2D, texture0);
-                GL.ActiveTexture((TextureUnit)activeTexture);
-
-                GL.Viewport(viewportX, viewportY, viewportW, viewportH);
-                set(EnableCap.ScissorTest, scissor);
-                set(EnableCap.DepthTest, depthTest);
-                set(EnableCap.Blend, blend);
-                set(EnableCap.CullFace, cullFace);
-                GL.ColorMask(maskR, maskG, maskB, maskA);
-                GL.ClearColor(clearR, clearG, clearB, clearA);
-            }
-
-            private static void set(EnableCap cap, bool enabled)
-            {
-                if (enabled) GL.Enable(cap);
-                else GL.Disable(cap);
-            }
         }
 
         #region Shaders

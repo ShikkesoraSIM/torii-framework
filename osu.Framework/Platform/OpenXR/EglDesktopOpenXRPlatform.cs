@@ -68,6 +68,6 @@ namespace osu.Framework.Platform.OpenXR
         // Desktop GPUs render both at the full recommended resolution with ease.
         public float EnvironmentResolutionScale => 1;
 
-        public float ControllerResolutionScale => 1;
+        public float SceneResolutionScale => 1;
     }
 }

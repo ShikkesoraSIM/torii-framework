@@ -61,8 +61,9 @@ namespace osu.Framework.Platform.OpenXR
         float EnvironmentResolutionScale { get; }
 
         /// <summary>
-        /// Resolution of the per-eye images the controllers are rendered to, relative to the runtime's recommendation.
+        /// Resolution of the per-eye images the controllers (and whatever else <see cref="OpenXRSceneRenderer"/> draws) are rendered to,
+        /// relative to the runtime's recommendation.
         /// </summary>
-        float ControllerResolutionScale { get; }
+        float SceneResolutionScale { get; }
     }
 }

@@ -27,7 +27,7 @@ namespace osu.Framework.Platform.OpenXR
     /// <item>For development, <c>controller-left.glb</c> / <c>controller-right.glb</c> in the debug directory, handled like (2).</item>
     /// </list>
     /// A <see cref="HeldModel"/> (e.g. a pen) replaces all of these, in both hands, placed at the pointer's aim pose.
-    /// Hands without a model are drawn with <see cref="OpenXRControllerRenderer"/>'s built-in stylised model.
+    /// Hands without a model are drawn with <see cref="OpenXRSceneRenderer"/>'s built-in stylised model.
     /// Runtime calls happen on the calling (render) thread; parsing and image decoding happen in the background.
     /// </remarks>
     internal sealed unsafe class OpenXRControllerModels : IDisposable

@@ -87,10 +87,11 @@ namespace osu.Framework.Android.XR
 
         public XrStructureType SwapchainImageType => XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
 
-        // Mobile GPUs: the environment is soft anyway, and the controllers are small on screen.
+        // Mobile GPUs: the environment is soft anyway, and the scene layer only shows the controllers, small on screen and mostly empty
+        // (a reduced resolution keeps the cost of clearing, storing and compositing a full-view layer low).
         public float EnvironmentResolutionScale => 0.7f;
 
-        public float ControllerResolutionScale => 0.6f;
+        public float SceneResolutionScale => 0.6f;
 
         public bool CanDisableSrgbWrites
         {

@@ -101,17 +101,17 @@ namespace osu.Framework.Platform.OpenXR
         public bool CurvedBackground => enabledExtensions.Contains("XR_KHR_composition_layer_equirect2") || drawSurfacesInScene;
 
         /// <summary>
-        /// Whether the game's images (the panel and the layers behind it) are drawn into the controllers' projection layer by
-        /// <see cref="OpenXRControllerRenderer"/> rather than submitted as composition layers of their own.
+        /// Whether the game's images (the panel and the layers behind it) are drawn into the scene's projection layer by
+        /// <see cref="OpenXRSceneRenderer"/> rather than submitted as composition layers of their own.
         /// </summary>
         /// <remarks>
         /// For runtimes without cylinder layers. That is SteamVR, which shows quad layers as overlays, in front of every projection
         /// layer whatever the order they're submitted in: the controllers would be hidden behind the panel. Drawing the panel here also
         /// keeps it curved.
         /// </remarks>
-        private bool drawSurfacesInScene => !enabledExtensions.Contains("XR_KHR_composition_layer_cylinder") && !DebugHeadLockedPanel && !controllerRenderingFailed;
+        private bool drawSurfacesInScene => !enabledExtensions.Contains("XR_KHR_composition_layer_cylinder") && !DebugHeadLockedPanel && !sceneRenderingFailed;
 
-        private readonly OpenXRControllerRenderer.Surface[] sceneSurfaces = new OpenXRControllerRenderer.Surface[2 + OpenXRPointerVisuals.MAX_LAYERS + 4];
+        private readonly OpenXRSceneRenderer.Surface[] sceneSurfaces = new OpenXRSceneRenderer.Surface[2 + OpenXRPointerVisuals.MAX_LAYERS + 4];
 
         /// <summary>
         /// Horizontal angle of the background layer as seen by the viewer, in radians.
@@ -448,7 +448,7 @@ namespace osu.Framework.Platform.OpenXR
 
                 environmentRenderer.FlashReduction = FlashReduction;
                 environmentRenderer.SetAudio(environmentBands, environmentPulse, environmentKiai);
-                // With the game's surfaces drawn in the scene, so is the environment, by the controllers' renderer (see RenderControllers).
+                // With the game's surfaces drawn in the scene, so is the environment, by the scene renderer (see RenderScene).
                 environmentRenderer.Render(space, frameState.predictedDisplayTime, environmentScene(space), backgroundTexture, ownLayer: !drawSurfacesInScene);
             }
             catch (Exception e)
@@ -459,9 +459,9 @@ namespace osu.Framework.Platform.OpenXR
         }
 
         private OpenXRViewLocator? viewLocator;
-        private OpenXRControllerRenderer? controllerRenderer;
+        private OpenXRSceneRenderer? sceneRenderer;
         private OpenXRControllerModels? controllerModels;
-        private bool controllerRenderingFailed;
+        private bool sceneRenderingFailed;
 
         /// <summary>
         /// A directory holding development files (e.g. controller-left.glb / controller-right.glb, used as controller models when the
@@ -479,27 +479,26 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public byte[]? HeldModel { get; set; }
 
-        private bool holdingModel => ShowControllers && HeldModel != null && controllerModels != null && !controllerRenderingFailed;
+        private bool holdingModel => ShowControllers && HeldModel != null && controllerModels != null && !sceneRenderingFailed;
 
         /// <summary>
-        /// Renders the controller models for the current frame. Must be called between <see cref="BeginFrame"/> and <see cref="EndFrame"/>.
+        /// Renders the controller models (and, where the game draws the whole scene itself, everything behind them) for the current frame. Must be called between <see cref="BeginFrame"/> and <see cref="EndFrame"/>.
         /// </summary>
-        public void RenderControllers()
+        public void RenderScene()
         {
             bool surfaces = drawSurfacesInScene;
 
-            if ((!ShowControllers && !surfaces) || controllerRenderingFailed || Input == null || DebugHeadLockedPanel)
+            if ((!ShowControllers && !surfaces) || sceneRenderingFailed || Input == null || DebugHeadLockedPanel)
                 return;
 
             try
             {
-                // Mostly empty, so a reduced resolution keeps its cost (clearing, storing and compositing a full-view layer) low.
-                if (controllerRenderer == null)
+                if (sceneRenderer == null)
                 {
-                    controllerRenderer = OpenXRControllerRenderer.Create(xr, instance, systemId, session, swapchainFormat, platform.SwapchainImageType, platform.ControllerResolutionScale, viewLocator!);
+                    sceneRenderer = OpenXRSceneRenderer.Create(xr, instance, systemId, session, swapchainFormat, platform.SwapchainImageType, platform.SceneResolutionScale, viewLocator!);
 
                     if (controllerModels != null)
-                        controllerModels.ModelRemoved += m => controllerRenderer.Release(m.Model);
+                        controllerModels.ModelRemoved += m => sceneRenderer.Release(m.Model);
                 }
 
                 long time = frameState.predictedDisplayTime;
@@ -531,7 +530,7 @@ namespace osu.Framework.Platform.OpenXR
                         placeLayer(layer);
 
                         // A sphere section around the anchor, like the equirect layer other runtimes are given (see EndFrame).
-                        sceneSurfaces[surfaceCount++] = new OpenXRControllerRenderer.Surface
+                        sceneSurfaces[surfaceCount++] = new OpenXRSceneRenderer.Surface
                         {
                             Texture = layer.Images.CurrentTexture,
                             QuadCentre = AnchorPosition,
@@ -544,7 +543,7 @@ namespace osu.Framework.Platform.OpenXR
                     if (panel != null && panel.CurrentTexture != 0)
                     {
                         updatePanelGeometry();
-                        sceneSurfaces[surfaceCount++] = new OpenXRControllerRenderer.Surface { Texture = panel.CurrentTexture, Geometry = Panel, Opaque = layers.Count == 0 };
+                        sceneSurfaces[surfaceCount++] = new OpenXRSceneRenderer.Surface { Texture = panel.CurrentTexture, Geometry = Panel, Opaque = layers.Count == 0 };
 
                         // The pointer's beams and reticle: the same quads as EndFrame submits as layers, drawn over the panel instead.
                         // (SteamVR also blends such layers wrongly, leaving a dark fringe around them.)
@@ -557,7 +556,7 @@ namespace osu.Framework.Platform.OpenXR
                             {
                                 var quad = (XrCompositionLayerQuad*)pointerLayers[i];
 
-                                sceneSurfaces[surfaceCount++] = new OpenXRControllerRenderer.Surface
+                                sceneSurfaces[surfaceCount++] = new OpenXRSceneRenderer.Surface
                                 {
                                     Texture = pointerVisuals.TextureFor(quad->subImage.swapchain),
                                     QuadCentre = quad->pose.position.ToNumerics(),
@@ -569,7 +568,7 @@ namespace osu.Framework.Platform.OpenXR
                     }
                 }
 
-                controllerRenderer.Render(localSpace, time, Input.Hands, PointerActiveHand, new System.Numerics.Vector3(0.45f, 0.8f, 1f), controllerModels,
+                sceneRenderer.Render(localSpace, time, Input.Hands, PointerActiveHand, new System.Numerics.Vector3(0.45f, 0.8f, 1f), controllerModels,
                     sceneSurfaces.AsSpan(0, surfaceCount), ShowControllers,
                     surfaces && useEnvironmentRenderer && environmentRenderer?.HasRendered == true ? environmentRenderer : null);
             }
@@ -577,7 +576,7 @@ namespace osu.Framework.Platform.OpenXR
             {
                 // Not essential: carry on without them.
                 Logger.Error(e, "OpenXR: controller rendering failed; controller models are disabled.");
-                controllerRenderingFailed = true;
+                sceneRenderingFailed = true;
             }
         }
 
@@ -1156,14 +1155,14 @@ namespace osu.Framework.Platform.OpenXR
 
             XrCompositionLayerProjection projectionLayer;
             var projectionViews = stackalloc XrCompositionLayerProjectionView[2];
-            XrCompositionLayerProjection controllerLayer;
-            var controllerViews = stackalloc XrCompositionLayerProjectionView[2];
+            XrCompositionLayerProjection sceneLayer;
+            var sceneViews = stackalloc XrCompositionLayerProjectionView[2];
             bool environmentRendered = useEnvironmentRenderer && environmentRenderer?.HasRendered == true;
             bool fieldRendered = useField && environmentRendered;
 
-            // Whether the controllers' layer shows the game's images and the environment this frame (see drawSurfacesInScene), so they
+            // Whether the scene's layer shows the game's images and the environment this frame (see drawSurfacesInScene), so they
             // aren't submitted here.
-            bool surfacesInScene = drawSurfacesInScene && controllerRenderer?.HasRendered == true;
+            bool surfacesInScene = drawSurfacesInScene && sceneRenderer?.HasRendered == true;
 
             if (environmentRendered && !surfacesInScene)
             {
@@ -1218,10 +1217,10 @@ namespace osu.Framework.Platform.OpenXR
             }
 
             // Controllers on top of everything: one held in front of the panel must never be hidden by it.
-            if ((ShowControllers || surfacesInScene) && controllerRenderer?.HasRendered == true)
+            if ((ShowControllers || surfacesInScene) && sceneRenderer?.HasRendered == true)
             {
-                controllerRenderer.FillLayer(&controllerLayer, controllerViews, localSpace);
-                layerPointers[layerCount++] = (XrCompositionLayerBaseHeader*)&controllerLayer;
+                sceneRenderer.FillLayer(&sceneLayer, sceneViews, localSpace);
+                layerPointers[layerCount++] = (XrCompositionLayerBaseHeader*)&sceneLayer;
             }
 
             // The panel: a cylinder section around the viewer (or a flat quad as fallback), placed by Panel.
@@ -1414,8 +1413,8 @@ namespace osu.Framework.Platform.OpenXR
 
             pointerVisuals?.Dispose();
             pointerVisuals = null;
-            controllerRenderer?.Dispose();
-            controllerRenderer = null;
+            sceneRenderer?.Dispose();
+            sceneRenderer = null;
             controllerModels?.Dispose();
             controllerModels = null;
 

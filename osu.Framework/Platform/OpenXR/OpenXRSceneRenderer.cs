@@ -13,16 +13,19 @@ using static osu.Framework.Platform.OpenXR.Native.XrStructureType;
 namespace osu.Framework.Platform.OpenXR
 {
     /// <summary>
-    /// Draws stylised models of the motion controllers where they're held, into a stereo projection layer composited above the panel and
-    /// the laser beams (so a controller held in front of the panel is never hidden by it).
+    /// Draws what the game shows in 3D into a stereo projection layer composited above the panel and the laser beams: models of the
+    /// motion controllers where they're held (so a controller held in front of the panel is never hidden by it).
+    /// For runtimes which can't composite the game's other layers properly with this one (SteamVR), it also draws those underneath the
+    /// controllers, as the whole scene in a single layer: the environment, the game's images (see <see cref="Surface"/>) and the pointer.
     /// </summary>
     /// <remarks>
-    /// The models are built from a few primitives (no assets), lit simply, with accents that light up while the trigger and grip are
-    /// pressed. The active controller's accent glows brighter. The layer is mostly empty, so it's rendered at reduced resolution and skipped
-    /// entirely while neither controller is in view; silhouettes fade out over their last few degrees, which hides the jagged edges a
-    /// reduced resolution would otherwise show. Shares the game's GL context, so all GL state it touches is saved and restored.
+    /// The built-in controller models are made of a few primitives (no assets), lit simply, with accents that light up while the
+    /// trigger and grip are pressed. The active controller's accent glows brighter. With only controllers to show the layer is mostly
+    /// empty, so mobile platforms render it at reduced resolution, and it's skipped entirely while neither controller is in view;
+    /// silhouettes fade out over their last few degrees, which hides the jagged edges a reduced resolution would otherwise show.
+    /// Shares the game's GL context, so all GL state it touches is saved and restored.
     /// </remarks>
-    internal sealed unsafe class OpenXRControllerRenderer : IDisposable
+    internal sealed unsafe class OpenXRSceneRenderer : IDisposable
     {
         private const float near_plane = 0.03f;
         private const float far_plane = 20f;
@@ -106,12 +109,12 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public bool HasRendered { get; private set; }
 
-        private OpenXRControllerRenderer(XrFunctions xr, ulong session, long format, XrStructureType imageType, Size eyeSize)
+        private OpenXRSceneRenderer(XrFunctions xr, ulong session, long format, XrStructureType imageType, Size eyeSize)
         {
             this.xr = xr;
             this.session = session;
 
-            var state = GLState.Capture();
+            var state = GLStateSnapshot.Capture();
 
             for (int i = 0; i < 2; i++)
                 eyes[i] = new OpenXRSwapchainTarget(xr, session, eyeSize, format, imageType);
@@ -181,14 +184,14 @@ namespace osu.Framework.Platform.OpenXR
 
             state.Restore();
 
-            Logger.Log($"OpenXR: controller renderer created ({eyeSize.Width}x{eyeSize.Height} per eye)");
+            Logger.Log($"OpenXR: scene renderer created ({eyeSize.Width}x{eyeSize.Height} per eye)");
         }
 
         /// <summary>
         /// Creates the renderer, sizing its per-eye images from the runtime's recommendation scaled by <paramref name="resolutionScale"/>.
         /// Must be called on the GL thread.
         /// </summary>
-        public static OpenXRControllerRenderer Create(XrFunctions xr, ulong instance, ulong systemId, ulong session, long format, XrStructureType imageType,
+        public static OpenXRSceneRenderer Create(XrFunctions xr, ulong instance, ulong systemId, ulong session, long format, XrStructureType imageType,
                                                       float resolutionScale, OpenXRViewLocator viewLocator)
         {
             var configViews = stackalloc XrViewConfigurationView[2];
@@ -203,11 +206,11 @@ namespace osu.Framework.Platform.OpenXR
                 Math.Max(64, (int)(configViews[0].recommendedImageRectWidth * resolutionScale)),
                 Math.Max(64, (int)(configViews[0].recommendedImageRectHeight * resolutionScale)));
 
-            return new OpenXRControllerRenderer(xr, session, format, imageType, size) { ViewLocator = viewLocator };
+            return new OpenXRSceneRenderer(xr, session, format, imageType, size) { ViewLocator = viewLocator };
         }
 
         /// <summary>
-        /// Renders both controllers for the given frame, if any is tracked and in view.
+        /// Renders the frame: the environment and surfaces given, and the controllers if any is tracked and in view.
         /// </summary>
         /// <param name="space">The base space the views and controller poses are in (and the layer is submitted in).</param>
         /// <param name="displayTime">The frame's predicted display time.</param>
@@ -254,7 +257,7 @@ namespace osu.Framework.Platform.OpenXR
             if (!anyVisible)
                 return;
 
-            var state = GLState.Capture();
+            var state = GLStateSnapshot.Capture();
 
             try
             {
@@ -945,7 +948,7 @@ void main()
 
             GL.GetProgram(p, GetProgramParameterName.LinkStatus, out int linked);
             if (linked == 0)
-                throw new InvalidOperationException($"Controller shader failed to link: {GL.GetProgramInfoLog(p)}");
+                throw new InvalidOperationException($"Scene shader failed to link: {GL.GetProgramInfoLog(p)}");
 
             GL.DeleteShader(vertex);
             GL.DeleteShader(fragment);
@@ -972,96 +975,6 @@ void main()
             // GL objects go with the context; only the swapchains need releasing.
             foreach (var eye in eyes)
                 eye?.Dispose();
-        }
-
-        /// <summary>
-        /// Snapshot of the GL state this renderer changes, restored afterwards so the framework's cached GL state stays valid.
-        /// </summary>
-        private unsafe struct GLState
-        {
-            private int program, vertexArray, arrayBuffer, framebuffer, activeTexture, texture0;
-            private int viewportX, viewportY, viewportW, viewportH;
-            private bool scissor, depthTest, blend, cullFace, depthMask;
-            private int depthFunc, cullFaceMode, frontFace;
-            private int blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha, blendEquationRgb, blendEquationAlpha;
-            private bool maskR, maskG, maskB, maskA;
-            private float clearR, clearG, clearB, clearA;
-            private float clearDepth;
-
-            public static GLState Capture()
-            {
-                var s = new GLState();
-                GL.GetInteger(GetPName.CurrentProgram, out s.program);
-                GL.GetInteger(GetPName.VertexArrayBinding, out s.vertexArray);
-                GL.GetInteger(GetPName.ArrayBufferBinding, out s.arrayBuffer);
-                GL.GetInteger(GetPName.FramebufferBinding, out s.framebuffer);
-                GL.GetInteger(GetPName.ActiveTexture, out s.activeTexture);
-                GL.ActiveTexture(TextureUnit.Texture0);
-                GL.GetInteger(GetPName.TextureBinding2D, out s.texture0);
-                GL.ActiveTexture((TextureUnit)s.activeTexture);
-
-                int* viewport = stackalloc int[4];
-                GL.GetInteger(GetPName.Viewport, viewport);
-                (s.viewportX, s.viewportY, s.viewportW, s.viewportH) = (viewport[0], viewport[1], viewport[2], viewport[3]);
-
-                s.scissor = GL.IsEnabled(EnableCap.ScissorTest);
-                s.depthTest = GL.IsEnabled(EnableCap.DepthTest);
-                s.blend = GL.IsEnabled(EnableCap.Blend);
-                s.cullFace = GL.IsEnabled(EnableCap.CullFace);
-                GL.GetBoolean(GetPName.DepthWritemask, out s.depthMask);
-                GL.GetInteger(GetPName.DepthFunc, out s.depthFunc);
-                GL.GetInteger(GetPName.CullFaceMode, out s.cullFaceMode);
-                GL.GetInteger(GetPName.FrontFace, out s.frontFace);
-                GL.GetInteger(GetPName.BlendSrcRgb, out s.blendSrcRgb);
-                GL.GetInteger(GetPName.BlendDstRgb, out s.blendDstRgb);
-                GL.GetInteger(GetPName.BlendSrcAlpha, out s.blendSrcAlpha);
-                GL.GetInteger(GetPName.BlendDstAlpha, out s.blendDstAlpha);
-                GL.GetInteger(GetPName.BlendEquationRgb, out s.blendEquationRgb);
-                GL.GetInteger(GetPName.BlendEquationAlpha, out s.blendEquationAlpha);
-
-                bool* colorMask = stackalloc bool[4];
-                GL.GetBoolean(GetPName.ColorWritemask, colorMask);
-                (s.maskR, s.maskG, s.maskB, s.maskA) = (colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
-                float* clearColour = stackalloc float[4];
-                GL.GetFloat(GetPName.ColorClearValue, clearColour);
-                (s.clearR, s.clearG, s.clearB, s.clearA) = (clearColour[0], clearColour[1], clearColour[2], clearColour[3]);
-                GL.GetFloat(GetPName.DepthClearValue, out s.clearDepth);
-                return s;
-            }
-
-            public readonly void Restore()
-            {
-                GL.UseProgram(program);
-                GL.BindVertexArray(vertexArray);
-                GL.BindBuffer(BufferTarget.ArrayBuffer, arrayBuffer);
-                GL.BindFramebuffer(FramebufferTarget.Framebuffer, framebuffer);
-                GL.ActiveTexture(TextureUnit.Texture0);
-                GL.BindTexture(TextureTarget.Texture2D, texture0);
-                GL.ActiveTexture((TextureUnit)activeTexture);
-                GL.Viewport(viewportX, viewportY, viewportW, viewportH);
-
-                set(EnableCap.ScissorTest, scissor);
-                set(EnableCap.DepthTest, depthTest);
-                set(EnableCap.Blend, blend);
-                set(EnableCap.CullFace, cullFace);
-                GL.DepthMask(depthMask);
-                GL.DepthFunc((DepthFunction)depthFunc);
-                GL.CullFace((CullFaceMode)cullFaceMode);
-                GL.FrontFace((FrontFaceDirection)frontFace);
-                GL.BlendFuncSeparate((BlendingFactorSrc)blendSrcRgb, (BlendingFactorDest)blendDstRgb, (BlendingFactorSrc)blendSrcAlpha, (BlendingFactorDest)blendDstAlpha);
-                GL.BlendEquationSeparate((BlendEquationMode)blendEquationRgb, (BlendEquationMode)blendEquationAlpha);
-                GL.ColorMask(maskR, maskG, maskB, maskA);
-                GL.ClearColor(clearR, clearG, clearB, clearA);
-                GL.ClearDepth(clearDepth);
-            }
-
-            private static void set(EnableCap cap, bool enabled)
-            {
-                if (enabled)
-                    GL.Enable(cap);
-                else
-                    GL.Disable(cap);
-            }
         }
     }
 }

@@ -46,11 +46,7 @@ namespace osu.Framework.Platform.Linux
         protected override void ChooseAndSetupRenderer() => SetupRendererAndWindow("gl", GraphicsSurfaceType.OpenGL);
 
         protected override IWindow CreateWindow(GraphicsSurfaceType preferredSurface)
-        {
-            var window = new SDL3OpenXRLinuxWindow(preferredSurface, Options.FriendlyGameName, BypassCompositor, OpenXR.PanelSize);
-            OpenXR.IsDisplayed.BindValueChanged(d => window.ExternalIsActive.Value = d.NewValue, true);
-            return window;
-        }
+            => new SDL3OpenXRLinuxWindow(preferredSurface, Options.FriendlyGameName, BypassCompositor, OpenXR);
 
         public override ExternalRenderTarget GetExternalRenderTarget(string name) => OpenXR.GetExternalRenderTarget(name);
 
@@ -76,40 +72,31 @@ namespace osu.Framework.Platform.Linux
         }
 
         /// <summary>
-        /// The desktop window of an <see cref="OpenXRLinuxGameHost"/>: reports the panel size as its client size, and the XR session state
-        /// as its activity (the window itself rarely has focus while the headset, or a simulator window, is in use).
+        /// The desktop window of an <see cref="OpenXRLinuxGameHost"/>. See <see cref="OpenXRDesktopWindowState"/>.
         /// </summary>
         private class SDL3OpenXRLinuxWindow : SDL3LinuxWindow
         {
-            private readonly Size panelSize;
+            private readonly OpenXRDesktopWindowState state;
 
-            public readonly BindableBool ExternalIsActive = new BindableBool(true);
-
-            private string gameTitle = string.Empty;
-
-            public SDL3OpenXRLinuxWindow(GraphicsSurfaceType surfaceType, string appName, bool bypassCompositor, Size panelSize)
+            public SDL3OpenXRLinuxWindow(GraphicsSurfaceType surfaceType, string appName, bool bypassCompositor, OpenXRHostController xr)
                 : base(surfaceType, appName, bypassCompositor)
             {
-                this.panelSize = panelSize;
-                gameTitle = base.Title;
-                ExternalIsActive.BindValueChanged(_ => base.Title = OpenXRHostController.WindowTitle(gameTitle, ExternalIsActive.Value));
+                state = new OpenXRDesktopWindowState(xr, base.Title, title => base.Title = title);
 
                 // OpenXR's EGL binding needs an EGL context, which SDL only uses by default on Wayland.
                 SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, "1"u8).LogErrorIfFailed();
             }
 
-            public override Size ClientSize => panelSize;
+            public override Size ClientSize => state.ClientSize;
 
-            public override IBindable<bool> IsActive => ExternalIsActive;
+            public override IBindable<bool> IsActive => state.IsActive;
 
-            // The pointer is a VR controller aimed at the panel, wherever the desktop's mouse cursor is: presses and hovering are
-            // ignored while the cursor is outside the window.
-            public override IBindable<bool> CursorInWindow { get; } = new BindableBool(true);
+            public override IBindable<bool> CursorInWindow => state.CursorInWindow;
 
             public override string Title
             {
-                get => gameTitle;
-                set => base.Title = OpenXRHostController.WindowTitle(gameTitle = value, ExternalIsActive.Value);
+                get => state.Title;
+                set => state.Title = value;
             }
         }
     }

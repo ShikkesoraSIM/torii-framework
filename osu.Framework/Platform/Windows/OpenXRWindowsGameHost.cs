@@ -46,11 +46,7 @@ namespace osu.Framework.Platform.Windows
         protected override void ChooseAndSetupRenderer() => SetupRendererAndWindow("gl", GraphicsSurfaceType.OpenGL);
 
         protected override IWindow CreateWindow(GraphicsSurfaceType preferredSurface)
-        {
-            var window = new SDL3OpenXRWindowsWindow(preferredSurface, Options.FriendlyGameName, OpenXR.PanelSize);
-            OpenXR.IsDisplayed.BindValueChanged(d => window.ExternalIsActive.Value = d.NewValue, true);
-            return window;
-        }
+            => new SDL3OpenXRWindowsWindow(preferredSurface, Options.FriendlyGameName, OpenXR);
 
         public override ExternalRenderTarget GetExternalRenderTarget(string name) => OpenXR.GetExternalRenderTarget(name);
 
@@ -76,37 +72,28 @@ namespace osu.Framework.Platform.Windows
         }
 
         /// <summary>
-        /// The desktop window of an <see cref="OpenXRWindowsGameHost"/>: reports the panel size as its client size, and the XR session
-        /// state as its activity (the window itself rarely has focus while the headset is in use).
+        /// The desktop window of an <see cref="OpenXRWindowsGameHost"/>. See <see cref="OpenXRDesktopWindowState"/>.
         /// </summary>
         private class SDL3OpenXRWindowsWindow : SDL3WindowsWindow
         {
-            private readonly Size panelSize;
+            private readonly OpenXRDesktopWindowState state;
 
-            public readonly BindableBool ExternalIsActive = new BindableBool(true);
-
-            private string gameTitle = string.Empty;
-
-            public SDL3OpenXRWindowsWindow(GraphicsSurfaceType surfaceType, string appName, Size panelSize)
+            public SDL3OpenXRWindowsWindow(GraphicsSurfaceType surfaceType, string appName, OpenXRHostController xr)
                 : base(surfaceType, appName)
             {
-                this.panelSize = panelSize;
-                gameTitle = base.Title;
-                ExternalIsActive.BindValueChanged(_ => base.Title = OpenXRHostController.WindowTitle(gameTitle, ExternalIsActive.Value));
+                state = new OpenXRDesktopWindowState(xr, base.Title, title => base.Title = title);
             }
 
-            public override Size ClientSize => panelSize;
+            public override Size ClientSize => state.ClientSize;
 
-            public override IBindable<bool> IsActive => ExternalIsActive;
+            public override IBindable<bool> IsActive => state.IsActive;
 
-            // The pointer is a VR controller aimed at the panel, wherever the desktop's mouse cursor is: presses and hovering are
-            // ignored while the cursor is outside the window.
-            public override IBindable<bool> CursorInWindow { get; } = new BindableBool(true);
+            public override IBindable<bool> CursorInWindow => state.CursorInWindow;
 
             public override string Title
             {
-                get => gameTitle;
-                set => base.Title = OpenXRHostController.WindowTitle(gameTitle = value, ExternalIsActive.Value);
+                get => state.Title;
+                set => state.Title = value;
             }
         }
     }

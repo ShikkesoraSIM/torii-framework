@@ -81,6 +81,44 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public event Action? ExitRequested;
 
+        /// <summary>
+        /// Whether a desktop host exits when the runtime ends the session (see <see cref="ExitRequested"/>). A game which carries on
+        /// outside VR instead (e.g. when the runtime is closed) turns this off and handles <see cref="ExitRequested"/> itself.
+        /// </summary>
+        public bool ExitWhenSessionEnds { get; set; } = true;
+
+        /// <summary>
+        /// Invoked (on the draw thread) when OpenXR failed, at startup or later (e.g. the runtime was closed without ending the session
+        /// first): nothing is displayed in the headset from then on. See <see cref="Failed"/>.
+        /// </summary>
+        public event Action? SessionFailed;
+
+        /// <summary>
+        /// The name of the external render target shown in the host's desktop window, if it has one (see
+        /// <see cref="PresentsDesktopView"/>): what's redirected into it is drawn to the window rather than into the headset, every few
+        /// frames. The target is the size of the panel; it's scaled to fit the window.
+        /// </summary>
+        public const string DESKTOP_VIEW = "desktop";
+
+        /// <summary>
+        /// Whether the host has a desktop window to show the <see cref="DESKTOP_VIEW"/> target in. Set by the host before running.
+        /// Otherwise nothing redirected into that target is drawn at all.
+        /// </summary>
+        public bool PresentsDesktopView { get; set; }
+
+        /// <summary>
+        /// The least time between two frames of the desktop view, in milliseconds: it only shows status, and mustn't take time
+        /// from the headset's frames.
+        /// </summary>
+        private const double desktop_view_interval = 1000.0 / 30;
+
+        private readonly ExternalRenderTarget desktopView = new ExternalRenderTarget(DESKTOP_VIEW) { Hidden = true };
+        private OffscreenTarget? desktopViewImage;
+
+        // Stands in for the panel while nothing is drawn for the headset (e.g. it's idle), so the desktop view is still drawn.
+        private OffscreenTarget? idlePanelImage;
+        private long lastDesktopViewTimestamp;
+
         private readonly OpenXRInputHandler xrInput = new OpenXRInputHandler();
         private readonly PanelManipulator panelManipulator = new PanelManipulator();
 
@@ -303,6 +341,9 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public ExternalRenderTarget GetExternalRenderTarget(string name)
         {
+            if (name == DESKTOP_VIEW)
+                return desktopView;
+
             lock (externalTargets)
             {
                 if (!externalTargets.TryGetValue(name, out var target))
@@ -393,7 +434,10 @@ namespace osu.Framework.Platform.OpenXR
                 xr!.PollEvents();
 
                 if (!xr.IsSessionRunning)
+                {
+                    drawIdle(glRenderer, drawGame);
                     return;
+                }
 
                 lock (externalTargets)
                 {
@@ -405,10 +449,16 @@ namespace osu.Framework.Platform.OpenXR
                     glRenderer.BackbufferClearColour = externalTargets.Count > 0 ? new Color4(0, 0, 0, 0) : Color4.Black;
                 }
 
-                if (xr.BeginFrame(out int framebuffer))
+                bool headsetFrame = xr.BeginFrame(out int framebuffer);
+
+                if (!headsetFrame)
+                    drawIdle(glRenderer, drawGame);
+
+                if (headsetFrame)
                 {
                     glRenderer.BackbufferFramebuffer = framebuffer;
                     presentedThisFrame = false;
+                    prepareDesktopView();
 
                     long beforeGame = GC.GetAllocatedBytesForCurrentThread();
                     frameTimer?.Enter(FrameTimer.Phase.Draw);
@@ -450,6 +500,59 @@ namespace osu.Framework.Platform.OpenXR
         /// Call in place of the host's buffer swap: presentation happens when the XR frame ends.
         /// </summary>
         public void OnSwap() => presentedThisFrame = true;
+
+        /// <summary>
+        /// Makes the desktop view's target active for the frame about to be drawn if it's due, or hidden (not drawn at all) otherwise.
+        /// </summary>
+        /// <returns>Whether the desktop view is drawn this frame.</returns>
+        private bool prepareDesktopView()
+        {
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            if (!PresentsDesktopView
+                || (lastDesktopViewTimestamp != 0 && System.Diagnostics.Stopwatch.GetElapsedTime(lastDesktopViewTimestamp, now).TotalMilliseconds < desktop_view_interval))
+            {
+                desktopView.Hidden = true;
+                return false;
+            }
+
+            lastDesktopViewTimestamp = now;
+            desktopViewImage ??= new OffscreenTarget(PanelSize);
+            desktopView.Hidden = false;
+            desktopView.NativeFramebuffer = desktopViewImage.Framebuffer;
+            return true;
+        }
+
+        /// <summary>
+        /// Draws the game for the sake of its desktop view alone, while nothing is drawn for the headset.
+        /// </summary>
+        private void drawIdle(GLRenderer glRenderer, Action drawGame)
+        {
+            if (!prepareDesktopView())
+                return;
+
+            idlePanelImage ??= new OffscreenTarget(PanelSize);
+            glRenderer.BackbufferFramebuffer = idlePanelImage.Framebuffer;
+            drawGame();
+        }
+
+        /// <summary>
+        /// Copies the desktop view drawn this frame, if any, to the window's back buffer (scaled to fit), for the host to present.
+        /// Call from the host's buffer swap, on the draw thread.
+        /// </summary>
+        /// <param name="windowSize">The size of the window's back buffer in pixels.</param>
+        /// <returns>Whether there's a new image to present.</returns>
+        public bool BlitDesktopView(Size windowSize)
+        {
+            if (desktopViewImage == null || desktopView.Hidden || !desktopView.HasContent || windowSize.Width <= 0 || windowSize.Height <= 0)
+                return false;
+
+            // Drawn once per activation.
+            desktopView.Hidden = true;
+
+            desktopViewImage.BlitToBackbuffer(windowSize);
+            return true;
+        }
 
         private bool debugFlag(string name) => debugDirectory != null && File.Exists(Path.Combine(debugDirectory, name));
 
@@ -503,6 +606,7 @@ namespace osu.Framework.Platform.OpenXR
         {
             Failed = true;
             Logger.Error(e, "OpenXR failed; the game can't be displayed in the headset.");
+            SessionFailed?.Invoke();
         }
 
         public void Dispose()

@@ -26,6 +26,8 @@ namespace osu.Framework.Platform.Linux
     {
         public OpenXRHostController OpenXR { get; }
 
+        private SDL3OpenXRLinuxWindow? window;
+
         // Cached: converting a method group to a delegate allocates, and this is passed every frame.
         private readonly Action drawGame;
 
@@ -36,7 +38,13 @@ namespace osu.Framework.Platform.Linux
                 throw new InvalidOperationException($"{nameof(OpenXRLinuxGameHost)} requires SDL3.");
 
             OpenXR = new OpenXRHostController(new EglDesktopOpenXRPlatform(gameName), panelSize ?? new Size(1920, 1080), debugDirectory);
-            OpenXR.ExitRequested += Exit;
+            // (Unless the game deals with the session ending itself, e.g. by carrying on outside VR.)
+            OpenXR.ExitRequested += () =>
+            {
+                if (OpenXR.ExitWhenSessionEnds)
+                    Exit();
+            };
+            OpenXR.PresentsDesktopView = true;
             drawGame = () => base.DrawFrame();
         }
 
@@ -46,7 +54,7 @@ namespace osu.Framework.Platform.Linux
         protected override void ChooseAndSetupRenderer() => SetupRendererAndWindow("gl", GraphicsSurfaceType.OpenGL);
 
         protected override IWindow CreateWindow(GraphicsSurfaceType preferredSurface)
-            => new SDL3OpenXRLinuxWindow(preferredSurface, Options.FriendlyGameName, BypassCompositor, OpenXR);
+            => window = new SDL3OpenXRLinuxWindow(preferredSurface, Options.FriendlyGameName, BypassCompositor, OpenXR);
 
         public override ExternalRenderTarget GetExternalRenderTarget(string name) => OpenXR.GetExternalRenderTarget(name);
 
@@ -61,7 +69,20 @@ namespace osu.Framework.Platform.Linux
 
         protected override void DrawFrame() => OpenXR.Draw(Renderer, drawGame);
 
-        protected override void Swap() => OpenXR.OnSwap();
+        protected override void Swap()
+        {
+            OpenXR.OnSwap();
+
+            // The window shows the game's desktop view (see OpenXRHostController.DESKTOP_VIEW), every few frames.
+            if (window == null || !OpenXR.BlitDesktopView(window.WindowSize))
+                return;
+
+            // Never wait for the monitor: frames are paced by the headset.
+            if (Renderer.VerticalSync)
+                Renderer.VerticalSync = false;
+
+            base.Swap();
+        }
 
         protected override void Dispose(bool disposing)
         {
@@ -81,7 +102,7 @@ namespace osu.Framework.Platform.Linux
             public SDL3OpenXRLinuxWindow(GraphicsSurfaceType surfaceType, string appName, bool bypassCompositor, OpenXRHostController xr)
                 : base(surfaceType, appName, bypassCompositor)
             {
-                state = new OpenXRDesktopWindowState(xr, base.Title, title => base.Title = title);
+                state = new OpenXRDesktopWindowState(xr, base.Title, title => base.Title = title, () => base.ClientSize);
 
                 // OpenXR's EGL binding needs an EGL context, which SDL only uses by default on Wayland.
                 SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, "1"u8).LogErrorIfFailed();
@@ -92,6 +113,13 @@ namespace osu.Framework.Platform.Linux
             public override IBindable<bool> IsActive => state.IsActive;
 
             public override IBindable<bool> CursorInWindow => state.CursorInWindow;
+
+            /// <summary>
+            /// The actual client size of the window, in pixels.
+            /// </summary>
+            public Size WindowSize => state.WindowSize;
+
+            protected override osuTK.Vector2 TransformPointerPosition(osuTK.Vector2 position) => state.ToPanel(position);
 
             public override string Title
             {

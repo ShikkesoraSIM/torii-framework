@@ -32,15 +32,37 @@ namespace osu.Framework.Platform.OpenXR
 
         private readonly BindableBool isActive = new BindableBool(true);
         private readonly Action<string> setWindowTitle;
+        private readonly Func<Size> getWindowSize;
+
+        /// <summary>
+        /// The actual client size of the window, in pixels.
+        /// </summary>
+        public Size WindowSize => getWindowSize();
+
+        /// <summary>
+        /// Maps a pointer position on the window to the panel, which the whole of the window stands for: a mouse or pen used on
+        /// the desktop window moves the cursor across the whole panel in the headset.
+        /// </summary>
+        public osuTK.Vector2 ToPanel(osuTK.Vector2 position)
+        {
+            Size window = getWindowSize();
+
+            if (window.Width <= 0 || window.Height <= 0)
+                return position;
+
+            return new osuTK.Vector2(position.X * ClientSize.Width / window.Width, position.Y * ClientSize.Height / window.Height);
+        }
         private string title;
 
         /// <param name="xr">The host's OpenXR controller.</param>
         /// <param name="title">The window's initial title.</param>
         /// <param name="setWindowTitle">Sets the actual title of the window.</param>
-        public OpenXRDesktopWindowState(OpenXRHostController xr, string title, Action<string> setWindowTitle)
+        /// <param name="getWindowSize">Gets the actual client size of the window, in pixels.</param>
+        public OpenXRDesktopWindowState(OpenXRHostController xr, string title, Action<string> setWindowTitle, Func<Size> getWindowSize)
         {
             this.title = title;
             this.setWindowTitle = setWindowTitle;
+            this.getWindowSize = getWindowSize;
 
             ClientSize = xr.PanelSize;
 

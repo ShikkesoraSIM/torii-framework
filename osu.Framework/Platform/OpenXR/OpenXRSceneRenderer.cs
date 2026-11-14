@@ -59,9 +59,6 @@ namespace osu.Framework.Platform.OpenXR
 
         private static readonly Vector4 untextured_colour = new Vector4(0.12f, 0.125f, 0.135f, 1);
 
-        private readonly Mesh sphere;
-        private readonly Mesh cylinder;
-
         // Surfaces showing game images (see Surface): a strip of quads, rebuilt for every surface drawn.
         private const int surface_segments = 48;
         private const int surface_vertex_floats = 5;
@@ -164,28 +161,24 @@ namespace osu.Framework.Platform.OpenXR
             uEmissive = GL.GetUniformLocation(program, "u_emissive");
 
             // One buffer for all primitives: interleaved position + normal.
-            var vertices = new List<float>();
-            var indices = new List<ushort>();
-            sphere = buildSphere(vertices, indices, 24, 16);
-            cylinder = buildCylinder(vertices, indices, 24);
 
             vertexArray = GL.GenVertexArray();
             GL.BindVertexArray(vertexArray);
 
             vertexBuffer = GL.GenBuffer();
             GL.BindBuffer(BufferTarget.ArrayBuffer, vertexBuffer);
-            float[] vertexData = vertices.ToArray();
+            float[] vertexData = SceneShapes.Vertices;
             GL.BufferData(BufferTarget.ArrayBuffer, (IntPtr)(vertexData.Length * sizeof(float)), vertexData, BufferUsageHint.StaticDraw);
 
             indexBuffer = GL.GenBuffer();
             GL.BindBuffer(BufferTarget.ElementArrayBuffer, indexBuffer);
-            ushort[] indexData = indices.ToArray();
+            ushort[] indexData = SceneShapes.Indices;
             GL.BufferData(BufferTarget.ElementArrayBuffer, (IntPtr)(indexData.Length * sizeof(ushort)), indexData, BufferUsageHint.StaticDraw);
 
             GL.EnableVertexAttribArray(0);
-            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 6 * sizeof(float), IntPtr.Zero);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, SceneShapes.FLOATS_PER_VERTEX * sizeof(float), IntPtr.Zero);
             GL.EnableVertexAttribArray(1);
-            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 6 * sizeof(float), (IntPtr)(3 * sizeof(float)));
+            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, SceneShapes.FLOATS_PER_VERTEX * sizeof(float), (IntPtr)(3 * sizeof(float)));
 
             state.Restore();
 
@@ -497,47 +490,15 @@ namespace osu.Framework.Platform.OpenXR
         }
 
         /// <summary>
-        /// Draws one controller. Grip space: the handle runs along Z (-Z towards the thumb, where the head with the thumbstick is) and +Y
-        /// points forward out of the fist (where the trigger is).
+        /// Draws one controller as the built-in stylised model (see <see cref="SceneShapes.BuildController"/>).
         /// </summary>
         private void drawController(in XrHandState hand, bool active, Vector3 accent)
         {
-            var grip = Matrix4x4.CreateFromQuaternion(hand.GripOrientation) * Matrix4x4.CreateTranslation(hand.GripPosition);
+            Span<ShapePart> parts = stackalloc ShapePart[SceneShapes.MAX_PARTS];
+            int count = SceneShapes.BuildController(hand, active, accent, parts);
 
-            var body = new Vector3(0.085f, 0.09f, 0.10f);
-            var bodyDark = new Vector3(0.05f, 0.055f, 0.065f);
-            float accentLevel = active ? 0.85f : 0.3f;
-
-            // Handle: a tapered capsule along Z.
-            draw(cylinder, part(new Vector3(0.016f, 0.019f, 0.085f), Quaternion.Identity, new Vector3(0, 0, 0.005f)) * grip, body, Vector3.Zero);
-            draw(sphere, part(new Vector3(0.016f, 0.019f, 0.012f), Quaternion.Identity, new Vector3(0, 0, 0.0475f)) * grip, body, Vector3.Zero);
-
-            // Head: a flattened ellipsoid on top of the handle, reaching forward over the trigger and tilted towards the thumb.
-            var headTilt = Quaternion.CreateFromAxisAngle(Vector3.UnitX, -0.3f);
-            var headCentre = new Vector3(0, 0.012f, -0.052f);
-            draw(sphere, part(new Vector3(0.031f, 0.039f, 0.016f), headTilt, headCentre) * grip, body, Vector3.Zero);
-
-            // Accent band around the head.
-            draw(cylinder, part(new Vector3(0.0318f, 0.0398f, 0.006f), headTilt, headCentre) * grip, bodyDark, accent * accentLevel);
-
-            // Thumbstick on the head's top face, leaning with the stick.
-            var stickTilt = headTilt * Quaternion.CreateFromAxisAngle(Vector3.UnitY, hand.Thumbstick.X * 0.35f)
-                                     * Quaternion.CreateFromAxisAngle(Vector3.UnitX, -hand.Thumbstick.Y * 0.35f);
-            var stickBase = headCentre + Vector3.Transform(new Vector3(0, -0.004f, -0.016f), headTilt);
-            draw(cylinder, part(new Vector3(0.004f, 0.004f, 0.012f), stickTilt, stickBase + Vector3.Transform(new Vector3(0, 0, -0.004f), stickTilt)) * grip,
-                bodyDark, Vector3.Zero);
-            draw(sphere, part(new Vector3(0.008f, 0.008f, 0.003f), stickTilt, stickBase + Vector3.Transform(new Vector3(0, 0, -0.0105f), stickTilt)) * grip,
-                body * 1.4f, Vector3.Zero);
-
-            // Trigger: under the head at the front, pulled in and lit as it's pressed.
-            float trigger = Math.Clamp(hand.Trigger, 0, 1);
-            draw(sphere, part(new Vector3(0.0075f, 0.009f, 0.015f), Quaternion.CreateFromAxisAngle(Vector3.UnitX, -0.5f - 0.25f * trigger),
-                new Vector3(0, 0.03f - 0.005f * trigger, -0.03f)) * grip, bodyDark, accent * (0.08f + 0.9f * trigger));
-
-            // Grip button: along the front of the handle, lit as it's squeezed.
-            float squeeze = Math.Clamp(hand.Squeeze, 0, 1);
-            draw(sphere, part(new Vector3(0.011f, 0.007f, 0.024f), Quaternion.Identity, new Vector3(0, 0.0165f - 0.002f * squeeze, 0.008f)) * grip,
-                bodyDark, accent * (0.05f + 0.8f * squeeze));
+            for (int i = 0; i < count; i++)
+                draw(parts[i].Mesh, parts[i].Model, parts[i].Base, parts[i].Emissive);
         }
 
         #region Runtime-provided models
@@ -696,10 +657,7 @@ namespace osu.Framework.Platform.OpenXR
 
         #endregion
 
-        private static Matrix4x4 part(Vector3 scale, Quaternion rotation, Vector3 translation)
-            => Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rotation) * Matrix4x4.CreateTranslation(translation);
-
-        private void draw(in Mesh mesh, Matrix4x4 model, Vector3 baseColour, Vector3 emissive)
+        private void draw(MeshRange mesh, Matrix4x4 model, Vector3 baseColour, Vector3 emissive)
         {
             Matrix4x4.Invert(model, out var inverse);
 
@@ -762,96 +720,6 @@ namespace osu.Framework.Platform.OpenXR
                 views = projectionViews,
             };
         }
-
-        #region Meshes
-
-        private readonly record struct Mesh(int FirstIndex, int IndexCount);
-
-        /// <summary>
-        /// A unit sphere (radius 1).
-        /// </summary>
-        private static Mesh buildSphere(List<float> vertices, List<ushort> indices, int segments, int rings)
-        {
-            int firstVertex = vertices.Count / 6;
-            int firstIndex = indices.Count;
-
-            for (int r = 0; r <= rings; r++)
-            {
-                float theta = MathF.PI * r / rings;
-
-                for (int s = 0; s <= segments; s++)
-                {
-                    float phi = 2 * MathF.PI * s / segments;
-                    var n = new Vector3(MathF.Sin(theta) * MathF.Cos(phi), MathF.Sin(theta) * MathF.Sin(phi), MathF.Cos(theta));
-                    vertices.AddRange(new[] { n.X, n.Y, n.Z, n.X, n.Y, n.Z });
-                }
-            }
-
-            for (int r = 0; r < rings; r++)
-            {
-                for (int s = 0; s < segments; s++)
-                {
-                    int a = firstVertex + r * (segments + 1) + s;
-                    int b = a + segments + 1;
-                    // Counter-clockwise seen from outside (s turns anticlockwise about +Z, r moves away from the +Z pole).
-                    indices.AddRange(new[] { (ushort)a, (ushort)b, (ushort)(a + 1), (ushort)(a + 1), (ushort)b, (ushort)(b + 1) });
-                }
-            }
-
-            return new Mesh(firstIndex, indices.Count - firstIndex);
-        }
-
-        /// <summary>
-        /// A unit cylinder along Z (radius 1, from z = -0.5 to 0.5), capped.
-        /// </summary>
-        private static Mesh buildCylinder(List<float> vertices, List<ushort> indices, int segments)
-        {
-            int firstIndex = indices.Count;
-
-            // Side.
-            int side = vertices.Count / 6;
-
-            for (int s = 0; s <= segments; s++)
-            {
-                float phi = 2 * MathF.PI * s / segments;
-                float x = MathF.Cos(phi), y = MathF.Sin(phi);
-                vertices.AddRange(new[] { x, y, -0.5f, x, y, 0 });
-                vertices.AddRange(new[] { x, y, 0.5f, x, y, 0 });
-            }
-
-            for (int s = 0; s < segments; s++)
-            {
-                int a = side + s * 2;
-                indices.AddRange(new[] { (ushort)a, (ushort)(a + 2), (ushort)(a + 1), (ushort)(a + 2), (ushort)(a + 3), (ushort)(a + 1) });
-            }
-
-            // Caps.
-            foreach (float z in new[] { -0.5f, 0.5f })
-            {
-                int centre = vertices.Count / 6;
-                vertices.AddRange(new[] { 0, 0, z, 0, 0, MathF.Sign(z) });
-
-                for (int s = 0; s <= segments; s++)
-                {
-                    float phi = 2 * MathF.PI * s / segments;
-                    vertices.AddRange(new[] { MathF.Cos(phi), MathF.Sin(phi), z, 0, 0, MathF.Sign(z) });
-                }
-
-                for (int s = 0; s < segments; s++)
-                {
-                    ushort a = (ushort)(centre + 1 + s), b = (ushort)(centre + 2 + s);
-
-                    if (z > 0)
-                        indices.AddRange(new[] { (ushort)centre, a, b });
-                    else
-                        indices.AddRange(new[] { (ushort)centre, b, a });
-                }
-            }
-
-            return new Mesh(firstIndex, indices.Count - firstIndex);
-        }
-
-        #endregion
 
         #region Shaders
 

@@ -94,6 +94,28 @@ namespace osu.Framework.Platform.OpenXR
         public event Action? SessionFailed;
 
         /// <summary>
+        /// When set, a headset which isn't there yet (e.g. a wireless headset not connected to the runtime) is waited for rather than
+        /// being a failure: starting the session is attempted again every couple of seconds, for as long as this returns true (called
+        /// on the draw thread before each further attempt, e.g. checking that the runtime is still running). Once it returns false,
+        /// OpenXR fails as it would have. Set before running the host.
+        /// </summary>
+        public Func<bool>? WaitForHeadset { get; set; }
+
+        /// <summary>
+        /// Whether the session hasn't started because there's no headset yet (see <see cref="WaitForHeadset"/>). Nothing is displayed in
+        /// the meantime, other than the desktop view. Changes on the draw thread.
+        /// </summary>
+        public bool WaitingForHeadset { get; private set; }
+
+        /// <summary>
+        /// The time between two attempts at starting the session while waiting for the headset, in milliseconds.
+        /// </summary>
+        private const double headset_wait_interval = 2000;
+
+        private long lastSessionAttemptTimestamp;
+        private Exception? headsetWaitException;
+
+        /// <summary>
         /// The name of the external render target shown in the host's desktop window, if it has one (see
         /// <see cref="PresentsDesktopView"/>): what's redirected into it is drawn to the window rather than into the headset, every few
         /// frames. The target is the size of the panel; it's scaled to fit the window.
@@ -423,8 +445,27 @@ namespace osu.Framework.Platform.OpenXR
                 return;
             }
 
-            if (xr == null && !tryCreateSession(glRenderer))
-                return;
+            if (xr == null)
+            {
+                bool attempt = !WaitingForHeadset
+                               || System.Diagnostics.Stopwatch.GetElapsedTime(lastSessionAttemptTimestamp).TotalMilliseconds >= headset_wait_interval;
+
+                if (attempt && WaitingForHeadset && WaitForHeadset?.Invoke() != true)
+                {
+                    WaitingForHeadset = false;
+                    fail(headsetWaitException ?? new InvalidOperationException("Gave up waiting for the headset."));
+                    return;
+                }
+
+                if (!attempt || !tryCreateSession(glRenderer))
+                {
+                    // The desktop view says what's being waited for.
+                    if (WaitingForHeadset)
+                        drawIdle(glRenderer, drawGame);
+
+                    return;
+                }
+            }
 
             long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
             long gameDrawBytes = 0;
@@ -593,14 +634,47 @@ namespace osu.Framework.Platform.OpenXR
                 };
 
                 xr.ExitRequested += () => ExitRequested?.Invoke();
+
+                if (WaitingForHeadset)
+                    Logger.Log("OpenXR: the headset is available now.");
+
+                WaitingForHeadset = false;
+                headsetWaitException = null;
                 return true;
+            }
+            catch (Exception e) when (WaitForHeadset != null && isHeadsetUnavailable(e))
+            {
+                if (!WaitingForHeadset)
+                    Logger.Log($"OpenXR: no headset yet ({e.Message}) Waiting for it.");
+
+                xr?.Dispose();
+                xr = null;
+
+                WaitingForHeadset = true;
+                headsetWaitException = e;
+                lastSessionAttemptTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+                return false;
             }
             catch (Exception e)
             {
+                WaitingForHeadset = false;
                 fail(e);
                 return false;
             }
         }
+
+        /// <summary>
+        /// Whether starting the session failed for want of a headset, which may yet turn up: the runtime is there but has no headset
+        /// (SteamVR refuses the instance with a runtime failure while a wireless headset isn't connected), or isn't up yet.
+        /// </summary>
+        private static bool isHeadsetUnavailable(Exception e)
+            => e is XrException
+            {
+                Result: XrResult.XR_ERROR_RUNTIME_FAILURE
+                or XrResult.XR_ERROR_RUNTIME_UNAVAILABLE
+                or XrResult.XR_ERROR_FORM_FACTOR_UNAVAILABLE
+                or XrResult.XR_ERROR_INSTANCE_LOST
+            };
 
         private void fail(Exception e)
         {

@@ -685,8 +685,18 @@ namespace osu.Framework.Platform.OpenXR
             xr.Load(0);
 
             platform.InitialiseLoader(xr);
-            createInstance();
-            getSystem();
+
+            try
+            {
+                createInstance();
+                getSystem();
+            }
+            catch
+            {
+                // Don't leave an instance behind: the caller may try again (see OpenXRHostController.WaitForHeadset).
+                Dispose();
+                throw;
+            }
         }
 
         #region Instance

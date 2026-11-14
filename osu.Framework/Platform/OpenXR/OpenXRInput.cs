@@ -215,6 +215,37 @@ namespace osu.Framework.Platform.OpenXR
                 (menuAction, "/user/hand/left/input/system/click"),
             });
 
+            // Other desktop controllers. Those without A / B buttons use the trackpad's click as the primary button and the right
+            // hand's menu button as the secondary; those without a thumbstick scroll with the trackpad.
+            trySuggestBindings(instance, "/interaction_profiles/htc/vive_controller", controllerBindings(
+                trigger: "trigger/value", squeeze: "squeeze/click", stick: "trackpad",
+                primaryLeft: "trackpad/click", primaryRight: "trackpad/click", secondaryLeft: null, secondaryRight: "menu/click", menu: "menu/click"));
+
+            trySuggestBindings(instance, "/interaction_profiles/microsoft/motion_controller", controllerBindings(
+                trigger: "trigger/value", squeeze: "squeeze/click", stick: "thumbstick",
+                primaryLeft: "trackpad/click", primaryRight: "trackpad/click", secondaryLeft: null, secondaryRight: "menu/click", menu: "menu/click"));
+
+            if (enabledExtensions.Contains("XR_EXT_hp_mixed_reality_controller"))
+            {
+                trySuggestBindings(instance, "/interaction_profiles/hp/mixed_reality_controller", controllerBindings(
+                    trigger: "trigger/value", squeeze: "squeeze/value", stick: "thumbstick",
+                    primaryLeft: "x/click", primaryRight: "a/click", secondaryLeft: "y/click", secondaryRight: "b/click", menu: "menu/click"));
+            }
+
+            if (enabledExtensions.Contains("XR_HTC_vive_cosmos_controller_interaction"))
+            {
+                trySuggestBindings(instance, "/interaction_profiles/htc/vive_cosmos_controller", controllerBindings(
+                    trigger: "trigger/value", squeeze: "squeeze/click", stick: "thumbstick",
+                    primaryLeft: "x/click", primaryRight: "a/click", secondaryLeft: "y/click", secondaryRight: "b/click", menu: "menu/click"));
+            }
+
+            if (enabledExtensions.Contains("XR_HTC_vive_focus3_controller_interaction"))
+            {
+                trySuggestBindings(instance, "/interaction_profiles/htc/vive_focus3_controller", controllerBindings(
+                    trigger: "trigger/value", squeeze: "squeeze/click", stick: "thumbstick",
+                    primaryLeft: "x/click", primaryRight: "a/click", secondaryLeft: "y/click", secondaryRight: "b/click", menu: "menu/click"));
+            }
+
             // Fallback for other runtimes and devices, e.g. Monado's simulated controllers: aim, select as the trigger, menu.
             suggestBindings(instance, "/interaction_profiles/khr/simple_controller", new (ulong action, string path)[]
             {
@@ -359,6 +390,50 @@ namespace osu.Framework.Platform.OpenXR
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Bindings for a controller with the usual poses and haptics on both hands. Input paths are relative to
+        /// <c>/user/hand/&lt;hand&gt;/input/</c>; null leaves an action unbound on that hand.
+        /// </summary>
+        private (ulong action, string path)[] controllerBindings(string trigger, string squeeze, string stick, string primaryLeft, string primaryRight,
+                                                                 string? secondaryLeft, string? secondaryRight, string menu)
+        {
+            var bindings = new List<(ulong action, string path)>();
+
+            foreach (string hand in new[] { "/user/hand/left", "/user/hand/right" })
+            {
+                bool left = hand.EndsWith("left", StringComparison.Ordinal);
+
+                bindings.Add((aimAction, $"{hand}/input/aim/pose"));
+                bindings.Add((gripAction, $"{hand}/input/grip/pose"));
+                bindings.Add((hapticAction, $"{hand}/output/haptic"));
+                bindings.Add((triggerAction, $"{hand}/input/{trigger}"));
+                bindings.Add((squeezeAction, $"{hand}/input/{squeeze}"));
+                bindings.Add((thumbstickAction, $"{hand}/input/{stick}"));
+                bindings.Add((primaryAction, $"{hand}/input/{(left ? primaryLeft : primaryRight)}"));
+
+                if ((left ? secondaryLeft : secondaryRight) is string secondary)
+                    bindings.Add((secondaryAction, $"{hand}/input/{secondary}"));
+            }
+
+            bindings.Add((menuAction, $"/user/hand/left/input/{menu}"));
+            return bindings.ToArray();
+        }
+
+        /// <summary>
+        /// Suggests bindings for a controller the game can do without: a runtime rejecting them isn't fatal.
+        /// </summary>
+        private void trySuggestBindings(ulong instance, string profile, (ulong action, string path)[] bindings)
+        {
+            try
+            {
+                suggestBindings(instance, profile, bindings);
+            }
+            catch (XrException e)
+            {
+                Logger.Log($"OpenXR: no bindings for {profile}: {e.Message}");
+            }
         }
 
         private void suggestBindings(ulong instance, string profile, (ulong action, string path)[] bindings)

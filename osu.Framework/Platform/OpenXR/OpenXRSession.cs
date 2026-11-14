@@ -42,6 +42,12 @@ namespace osu.Framework.Platform.OpenXR
             "XR_EXT_performance_settings",
             "XR_EXT_local_floor",
             "XR_META_touch_controller_plus",
+            // Interaction profiles of other desktop controllers.
+            "XR_EXT_hp_mixed_reality_controller",
+            "XR_HTC_vive_cosmos_controller_interaction",
+            "XR_HTC_vive_focus3_controller_interaction",
+            // Required by XR_EXT_render_model: SteamVR fails instance creation (XR_ERROR_VALIDATION_FAILURE) if it isn't enabled along with it.
+            "XR_EXT_uuid",
             "XR_EXT_render_model",
             "XR_EXT_interaction_render_model",
             "XR_FB_render_model",
@@ -92,7 +98,20 @@ namespace osu.Framework.Platform.OpenXR
         /// <summary>
         /// Whether layers behind the panel are shown as sphere sections around the viewer (else flat quads).
         /// </summary>
-        public bool CurvedBackground => enabledExtensions.Contains("XR_KHR_composition_layer_equirect2");
+        public bool CurvedBackground => enabledExtensions.Contains("XR_KHR_composition_layer_equirect2") || drawSurfacesInScene;
+
+        /// <summary>
+        /// Whether the game's images (the panel and the layers behind it) are drawn into the controllers' projection layer by
+        /// <see cref="OpenXRControllerRenderer"/> rather than submitted as composition layers of their own.
+        /// </summary>
+        /// <remarks>
+        /// For runtimes without cylinder layers. That is SteamVR, which shows quad layers as overlays, in front of every projection
+        /// layer whatever the order they're submitted in: the controllers would be hidden behind the panel. Drawing the panel here also
+        /// keeps it curved.
+        /// </remarks>
+        private bool drawSurfacesInScene => !enabledExtensions.Contains("XR_KHR_composition_layer_cylinder") && !DebugHeadLockedPanel && !controllerRenderingFailed;
+
+        private readonly OpenXRControllerRenderer.Surface[] sceneSurfaces = new OpenXRControllerRenderer.Surface[2 + OpenXRPointerVisuals.MAX_LAYERS + 4];
 
         /// <summary>
         /// Horizontal angle of the background layer as seen by the viewer, in radians.
@@ -103,7 +122,7 @@ namespace osu.Framework.Platform.OpenXR
         {
             var anchorOrientation = DebugHeadLockedPanel ? Quaternion.Identity : AnchorOrientation;
 
-            Panel.Cylinder = enabledExtensions.Contains("XR_KHR_composition_layer_cylinder");
+            Panel.Cylinder = enabledExtensions.Contains("XR_KHR_composition_layer_cylinder") || drawSurfacesInScene;
             Panel.Aspect = (float)PanelSize.Width / PanelSize.Height;
             Panel.Radius = PanelDistance;
             Panel.HorizontalAngle = PanelHorizontalAngle;
@@ -413,7 +432,7 @@ namespace osu.Framework.Platform.OpenXR
 
             try
             {
-                environmentRenderer ??= OpenXREnvironmentRenderer.Create(xr, instance, systemId, session, swapchainFormat, platform.SwapchainImageType, 0.7f);
+                environmentRenderer ??= OpenXREnvironmentRenderer.Create(xr, instance, systemId, session, swapchainFormat, platform.SwapchainImageType, platform.EnvironmentResolutionScale, viewLocator!);
 
                 // (A loop rather than LINQ: this runs every frame and shouldn't allocate.)
                 OpenXRLayer? background = null;
@@ -429,7 +448,8 @@ namespace osu.Framework.Platform.OpenXR
 
                 environmentRenderer.FlashReduction = FlashReduction;
                 environmentRenderer.SetAudio(environmentBands, environmentPulse, environmentKiai);
-                environmentRenderer.Render(space, frameState.predictedDisplayTime, environmentScene(space), backgroundTexture);
+                // With the game's surfaces drawn in the scene, so is the environment, by the controllers' renderer (see RenderControllers).
+                environmentRenderer.Render(space, frameState.predictedDisplayTime, environmentScene(space), backgroundTexture, ownLayer: !drawSurfacesInScene);
             }
             catch (Exception e)
             {
@@ -438,6 +458,7 @@ namespace osu.Framework.Platform.OpenXR
             }
         }
 
+        private OpenXRViewLocator? viewLocator;
         private OpenXRControllerRenderer? controllerRenderer;
         private OpenXRControllerModels? controllerModels;
         private bool controllerRenderingFailed;
@@ -465,7 +486,9 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public void RenderControllers()
         {
-            if (!ShowControllers || controllerRenderingFailed || Input == null || DebugHeadLockedPanel)
+            bool surfaces = drawSurfacesInScene;
+
+            if ((!ShowControllers && !surfaces) || controllerRenderingFailed || Input == null || DebugHeadLockedPanel)
                 return;
 
             try
@@ -473,7 +496,7 @@ namespace osu.Framework.Platform.OpenXR
                 // Mostly empty, so a reduced resolution keeps its cost (clearing, storing and compositing a full-view layer) low.
                 if (controllerRenderer == null)
                 {
-                    controllerRenderer = OpenXRControllerRenderer.Create(xr, instance, systemId, session, swapchainFormat, platform.SwapchainImageType, 0.6f);
+                    controllerRenderer = OpenXRControllerRenderer.Create(xr, instance, systemId, session, swapchainFormat, platform.SwapchainImageType, platform.ControllerResolutionScale, viewLocator!);
 
                     if (controllerModels != null)
                         controllerModels.ModelRemoved += m => controllerRenderer.Release(m.Model);
@@ -487,7 +510,68 @@ namespace osu.Framework.Platform.OpenXR
                     controllerModels.Update(localSpace, time, Input.Hands);
                 }
 
-                controllerRenderer.Render(localSpace, time, Input.Hands, PointerActiveHand, new System.Numerics.Vector3(0.45f, 0.8f, 1f), controllerModels);
+                int surfaceCount = 0;
+
+                if (surfaces)
+                {
+                    bool fieldRendered = useField && useEnvironmentRenderer && environmentRenderer?.HasRendered == true;
+
+                    // The same layers, in the same order, as EndFrame submits to runtimes which composite them.
+                    foreach (var layer in layers)
+                    {
+                        if (surfaceCount == sceneSurfaces.Length - 1 - OpenXRPointerVisuals.MAX_LAYERS)
+                            break;
+
+                        if (layer.Images == null || layer.Images.CurrentTexture == 0 || !layer.Target.HasContent)
+                            continue;
+
+                        if ((usePassthrough || fieldRendered) && layer.Target.Name == "background")
+                            continue;
+
+                        placeLayer(layer);
+
+                        // A sphere section around the anchor, like the equirect layer other runtimes are given (see EndFrame).
+                        sceneSurfaces[surfaceCount++] = new OpenXRControllerRenderer.Surface
+                        {
+                            Texture = layer.Images.CurrentTexture,
+                            QuadCentre = AnchorPosition,
+                            QuadOrientation = AnchorOrientation,
+                            QuadSize = new System.Numerics.Vector2(layer.HorizontalAngle, layer.HorizontalAngle * PanelSize.Height / PanelSize.Width),
+                            SphereRadius = layer.Radius,
+                        };
+                    }
+
+                    if (panel != null && panel.CurrentTexture != 0)
+                    {
+                        updatePanelGeometry();
+                        sceneSurfaces[surfaceCount++] = new OpenXRControllerRenderer.Surface { Texture = panel.CurrentTexture, Geometry = Panel, Opaque = layers.Count == 0 };
+
+                        // The pointer's beams and reticle: the same quads as EndFrame submits as layers, drawn over the panel instead.
+                        // (SteamVR also blends such layers wrongly, leaving a dark fringe around them.)
+                        if (pointerVisuals != null)
+                        {
+                            var pointerLayers = stackalloc XrCompositionLayerBaseHeader*[OpenXRPointerVisuals.MAX_LAYERS];
+                            int pointerCount = pointerVisuals.BuildLayers(Input.Hands, PointerActiveHand, HeadPosition, this, PointerEdgeTolerance, holdingModel ? 0 : 0.02f, pointerLayers);
+
+                            for (int i = 0; i < pointerCount; i++)
+                            {
+                                var quad = (XrCompositionLayerQuad*)pointerLayers[i];
+
+                                sceneSurfaces[surfaceCount++] = new OpenXRControllerRenderer.Surface
+                                {
+                                    Texture = pointerVisuals.TextureFor(quad->subImage.swapchain),
+                                    QuadCentre = quad->pose.position.ToNumerics(),
+                                    QuadOrientation = quad->pose.orientation.ToNumerics(),
+                                    QuadSize = new System.Numerics.Vector2(quad->size.width, quad->size.height),
+                                };
+                            }
+                        }
+                    }
+                }
+
+                controllerRenderer.Render(localSpace, time, Input.Hands, PointerActiveHand, new System.Numerics.Vector3(0.45f, 0.8f, 1f), controllerModels,
+                    sceneSurfaces.AsSpan(0, surfaceCount), ShowControllers,
+                    surfaces && useEnvironmentRenderer && environmentRenderer?.HasRendered == true ? environmentRenderer : null);
             }
             catch (Exception e)
             {
@@ -787,6 +871,7 @@ namespace osu.Framework.Platform.OpenXR
             long format = createPanelSwapchain();
 
             Input = new OpenXRInput(xr, instance, session, enabledExtensions);
+            viewLocator = new OpenXRViewLocator(xr, session);
 
             try
             {
@@ -796,7 +881,8 @@ namespace osu.Framework.Platform.OpenXR
             {
                 Logger.Error(e, "OpenXR: controller models are unavailable; using the built-in model.");
             }
-            pointerVisuals = new OpenXRPointerVisuals(xr, session, localSpace, format, platform.SwapchainImageType);
+            pointerVisuals = new OpenXRPointerVisuals(xr, session, localSpace, format, platform.SwapchainImageType,
+                createTextures: !enabledExtensions.Contains("XR_KHR_composition_layer_cylinder"));
 
             Logger.Log("OpenXR: session created.");
         }
@@ -928,9 +1014,14 @@ namespace osu.Framework.Platform.OpenXR
                 fixed (float* r = rates)
                     xr.xrEnumerateDisplayRefreshRatesFB(session, count, &count, r).ThrowIfFailed(nameof(xr.xrEnumerateDisplayRefreshRatesFB));
 
-                var candidates = rates.Where(r => r <= preferred).ToArray();
+                // Rates are reported inexactly (e.g. 120.000004 Hz), so allow a little over.
+                var candidates = rates.Where(r => r <= preferred + 0.5f).ToArray();
+
                 if (candidates.Length == 0)
+                {
+                    Logger.Log($"OpenXR: display refresh rates [{string.Join(", ", rates)}]; none at or below {preferred} Hz, keeping the runtime's.");
                     return;
+                }
 
                 float chosen = candidates.Max();
                 xr.xrRequestDisplayRefreshRateFB(session, chosen).ThrowIfFailed(nameof(xr.xrRequestDisplayRefreshRateFB));
@@ -1070,7 +1161,11 @@ namespace osu.Framework.Platform.OpenXR
             bool environmentRendered = useEnvironmentRenderer && environmentRenderer?.HasRendered == true;
             bool fieldRendered = useField && environmentRendered;
 
-            if (environmentRendered)
+            // Whether the controllers' layer shows the game's images and the environment this frame (see drawSurfacesInScene), so they
+            // aren't submitted here.
+            bool surfacesInScene = drawSurfacesInScene && controllerRenderer?.HasRendered == true;
+
+            if (environmentRendered && !surfacesInScene)
             {
                 environmentRenderer!.FillLayer(&projectionLayer, projectionViews, space);
                 layerPointers[layerCount++] = (XrCompositionLayerBaseHeader*)&projectionLayer;
@@ -1098,6 +1193,9 @@ namespace osu.Framework.Platform.OpenXR
                 if ((usePassthrough || fieldRendered) && layer.Target.Name == "background")
                     continue;
 
+                if (surfacesInScene)
+                    continue;
+
                 placeLayer(layer);
 
                 layerPointers[layerCount++] = backgroundSurface(layer.Images!.SubImage, XrCompositionLayerFlags.XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT,
@@ -1108,9 +1206,10 @@ namespace osu.Framework.Platform.OpenXR
             {
                 // With layers behind it the panel is cleared to transparent, so it must be alpha-blended over them.
                 ulong flags = layers.Count > 0 ? XrCompositionLayerFlags.XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
-                layerPointers[layerCount++] = panelSurface(Panel, panel.SubImage, flags);
+                if (!surfacesInScene)
+                    layerPointers[layerCount++] = panelSurface(Panel, panel.SubImage, flags);
 
-                if (pointerVisuals != null && Input != null)
+                if (pointerVisuals != null && Input != null && !surfacesInScene)
                 {
                     // A held model's ray comes out of its tip; a controller's starts a little ahead of it, clear of the model.
                     float laserStart = holdingModel ? 0 : 0.02f;
@@ -1119,7 +1218,7 @@ namespace osu.Framework.Platform.OpenXR
             }
 
             // Controllers on top of everything: one held in front of the panel must never be hidden by it.
-            if (ShowControllers && controllerRenderer?.HasRendered == true)
+            if ((ShowControllers || surfacesInScene) && controllerRenderer?.HasRendered == true)
             {
                 controllerRenderer.FillLayer(&controllerLayer, controllerViews, localSpace);
                 layerPointers[layerCount++] = (XrCompositionLayerBaseHeader*)&controllerLayer;
@@ -1215,7 +1314,16 @@ namespace osu.Framework.Platform.OpenXR
                 layers = layerPointers,
             };
 
+            var textureBindings = GLTextureBindings.Capture();
+            // SteamVR copies the submitted GL images on this context in xrEndFrame, with whatever scissor is set: the framework's
+            // (the size of the panel) would cut off the rest of larger images.
+            bool scissor = GL.IsEnabled(EnableCap.ScissorTest);
+            if (scissor) GL.Disable(EnableCap.ScissorTest);
+
             xr.xrEndFrame(session, &endInfo).ThrowIfFailed(nameof(xr.xrEndFrame));
+
+            if (scissor) GL.Enable(EnableCap.ScissorTest);
+            textureBindings.Restore();
 
             updateBoundaryVisibility();
         }

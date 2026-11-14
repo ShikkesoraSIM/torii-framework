@@ -45,7 +45,13 @@ namespace osu.Framework.Platform.OpenXR
 
         private readonly XrStructureType imageType;
 
-        public OpenXRPointerVisuals(XrFunctions xr, ulong session, ulong space, long format, XrStructureType imageType)
+        // The same images as plain GL textures, for drawing the visuals rather than submitting them as layers (see TextureFor).
+        private readonly int activeLaserTexture;
+        private readonly int inactiveLaserTexture;
+        private readonly int reticleTexture;
+
+        /// <param name="createTextures">Whether the visuals may be drawn by the caller (see <see cref="TextureFor"/>).</param>
+        public OpenXRPointerVisuals(XrFunctions xr, ulong session, ulong space, long format, XrStructureType imageType, bool createTextures = false)
         {
             this.imageType = imageType;
             this.xr = xr;
@@ -54,6 +60,13 @@ namespace osu.Framework.Platform.OpenXR
             activeLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(0.9f));
             inactiveLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(0.35f));
             reticle = createStaticSwapchain(session, format, reticle_texture_size, reticle_texture_size, reticlePixels());
+
+            if (createTextures)
+            {
+                activeLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(0.9f));
+                inactiveLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(0.35f));
+                reticleTexture = createTexture(reticle_texture_size, reticle_texture_size, reticlePixels());
+            }
 
             layers = (XrCompositionLayerQuad*)NativeMemory.AllocZeroed((nuint)(MAX_LAYERS * sizeof(XrCompositionLayerQuad)));
         }
@@ -223,6 +236,27 @@ namespace osu.Framework.Platform.OpenXR
             pixels[offset + 3] = (byte)(alpha * 255);
         }
 
+        /// <summary>
+        /// The GL texture (premultiplied alpha) holding the same image as the swapchain of a layer built by <see cref="BuildLayers"/>.
+        /// Only available if textures were requested on construction.
+        /// </summary>
+        public int TextureFor(ulong swapchain) => swapchain == activeLaser ? activeLaserTexture : swapchain == inactiveLaser ? inactiveLaserTexture : reticleTexture;
+
+        private static int createTexture(int width, int height, byte[] pixels)
+        {
+            // The framework's renderer caches texture bindings.
+            var textureBindings = GLTextureBindings.Capture();
+
+            int texture = GL.GenTexture();
+            GL.BindTexture(TextureTarget.Texture2D, texture);
+
+            fixed (byte* data = pixels)
+                GL.TexImage2D(TextureTarget2d.Texture2D, 0, TextureComponentCount.Rgba8, width, height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, (IntPtr)data);
+
+            textureBindings.Restore();
+            return texture;
+        }
+
         private ulong createStaticSwapchain(ulong session, long format, int width, int height, byte[] pixels)
         {
             var createInfo = new XrSwapchainCreateInfo
@@ -240,7 +274,9 @@ namespace osu.Framework.Platform.OpenXR
             };
 
             ulong swapchain;
+            var textureBindings = GLTextureBindings.Capture();
             xr.xrCreateSwapchain(session, &createInfo, &swapchain).ThrowIfFailed(nameof(xr.xrCreateSwapchain));
+            textureBindings.Restore();
 
             uint imageCount;
             xr.xrEnumerateSwapchainImages(swapchain, 0, &imageCount, null).ThrowIfFailed(nameof(xr.xrEnumerateSwapchainImages));

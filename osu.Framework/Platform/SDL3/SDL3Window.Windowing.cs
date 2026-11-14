@@ -233,7 +233,7 @@ namespace osu.Framework.Platform.SDL3
 
         private readonly BindableBool cursorInWindow = new BindableBool();
 
-        public IBindable<bool> CursorInWindow => cursorInWindow;
+        public virtual IBindable<bool> CursorInWindow => cursorInWindow;
 
         private bool visible;
 

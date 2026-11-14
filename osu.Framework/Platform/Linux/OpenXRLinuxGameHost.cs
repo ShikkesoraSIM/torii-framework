@@ -85,10 +85,14 @@ namespace osu.Framework.Platform.Linux
 
             public readonly BindableBool ExternalIsActive = new BindableBool(true);
 
+            private string gameTitle = string.Empty;
+
             public SDL3OpenXRLinuxWindow(GraphicsSurfaceType surfaceType, string appName, bool bypassCompositor, Size panelSize)
                 : base(surfaceType, appName, bypassCompositor)
             {
                 this.panelSize = panelSize;
+                gameTitle = base.Title;
+                ExternalIsActive.BindValueChanged(_ => base.Title = OpenXRHostController.WindowTitle(gameTitle, ExternalIsActive.Value));
 
                 // OpenXR's EGL binding needs an EGL context, which SDL only uses by default on Wayland.
                 SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, "1"u8).LogErrorIfFailed();
@@ -97,6 +101,16 @@ namespace osu.Framework.Platform.Linux
             public override Size ClientSize => panelSize;
 
             public override IBindable<bool> IsActive => ExternalIsActive;
+
+            // The pointer is a VR controller aimed at the panel, wherever the desktop's mouse cursor is: presses and hovering are
+            // ignored while the cursor is outside the window.
+            public override IBindable<bool> CursorInWindow { get; } = new BindableBool(true);
+
+            public override string Title
+            {
+                get => gameTitle;
+                set => base.Title = OpenXRHostController.WindowTitle(gameTitle = value, ExternalIsActive.Value);
+            }
         }
     }
 }

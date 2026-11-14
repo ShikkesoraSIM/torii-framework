@@ -54,5 +54,15 @@ namespace osu.Framework.Platform.OpenXR
         /// Called on the GL thread.
         /// </summary>
         bool CanDisableSrgbWrites { get; }
+
+        /// <summary>
+        /// Resolution of the per-eye images the environment is rendered to, relative to the runtime's recommendation.
+        /// </summary>
+        float EnvironmentResolutionScale { get; }
+
+        /// <summary>
+        /// Resolution of the per-eye images the controllers are rendered to, relative to the runtime's recommendation.
+        /// </summary>
+        float ControllerResolutionScale { get; }
     }
 }

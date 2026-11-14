@@ -87,6 +87,11 @@ namespace osu.Framework.Android.XR
 
         public XrStructureType SwapchainImageType => XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
 
+        // Mobile GPUs: the environment is soft anyway, and the controllers are small on screen.
+        public float EnvironmentResolutionScale => 0.7f;
+
+        public float ControllerResolutionScale => 0.6f;
+
         public bool CanDisableSrgbWrites
         {
             get

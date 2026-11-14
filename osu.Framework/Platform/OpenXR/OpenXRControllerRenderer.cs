@@ -54,6 +54,53 @@ namespace osu.Framework.Platform.OpenXR
         private readonly Mesh sphere;
         private readonly Mesh cylinder;
 
+        // Surfaces showing game images (see Surface): a strip of quads, rebuilt for every surface drawn.
+        private const int surface_segments = 48;
+        private const int surface_vertex_floats = 5;
+        private const int surface_sphere_bands = 16;
+        private readonly int surfaceProgram;
+        private readonly int sViewProjection, sTexture, sOpaque;
+        private readonly int surfaceVertexArray;
+        private readonly int surfaceVertexBuffer;
+        private readonly float[] surfaceVertices = new float[(surface_segments + 1) * 2 * surface_vertex_floats];
+
+        /// <summary>
+        /// A surface showing a game image, drawn behind the controllers. For runtimes which can't composite the game's layers in order
+        /// with this one (SteamVR shows quad layers as overlays, in front of every projection layer).
+        /// </summary>
+        public struct Surface
+        {
+            /// <summary>
+            /// The GL texture to show (bottom-up, premultiplied alpha, gamma-encoded).
+            /// </summary>
+            public int Texture;
+
+            /// <summary>
+            /// Where the surface is, in the space passed to <see cref="Render"/>. Null for a flat quad given by the Quad fields.
+            /// </summary>
+            public PanelGeometry? Geometry;
+
+            /// <summary>
+            /// A flat quad's centre, orientation (it lies in its XY plane) and size in metres. Used without a <see cref="Geometry"/>.
+            /// </summary>
+            public Vector3 QuadCentre;
+
+            public Quaternion QuadOrientation;
+            public Vector2 QuadSize;
+
+            /// <summary>
+            /// When above zero, the surface is a section of a sphere of this radius instead of a flat quad: centred on
+            /// <see cref="QuadCentre"/>, facing along -Z of <see cref="QuadOrientation"/>, covering the angles (radians) in
+            /// <see cref="QuadSize"/> horizontally and vertically.
+            /// </summary>
+            public float SphereRadius;
+
+            /// <summary>
+            /// Whether the image's alpha is ignored.
+            /// </summary>
+            public bool Opaque;
+        }
+
         /// <summary>
         /// Whether the last <see cref="Render"/> drew anything (the layer should only be submitted if so).
         /// </summary>
@@ -79,6 +126,21 @@ namespace osu.Framework.Platform.OpenXR
             tEmissive = GL.GetUniformLocation(texturedProgram, "u_emissive");
             tRim = GL.GetUniformLocation(texturedProgram, "u_rim");
             tTexture = GL.GetUniformLocation(texturedProgram, "u_texture");
+
+            surfaceProgram = createProgram(surface_vertex_shader, surface_fragment_shader);
+            sViewProjection = GL.GetUniformLocation(surfaceProgram, "u_viewProjection");
+            sTexture = GL.GetUniformLocation(surfaceProgram, "u_texture");
+            sOpaque = GL.GetUniformLocation(surfaceProgram, "u_opaque");
+
+            surfaceVertexArray = GL.GenVertexArray();
+            GL.BindVertexArray(surfaceVertexArray);
+            surfaceVertexBuffer = GL.GenBuffer();
+            GL.BindBuffer(BufferTarget.ArrayBuffer, surfaceVertexBuffer);
+            GL.BufferData(BufferTarget.ArrayBuffer, (IntPtr)(surfaceVertices.Length * sizeof(float)), IntPtr.Zero, BufferUsageHint.StreamDraw);
+            GL.EnableVertexAttribArray(0);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, surface_vertex_floats * sizeof(float), IntPtr.Zero);
+            GL.EnableVertexAttribArray(1);
+            GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, surface_vertex_floats * sizeof(float), (IntPtr)(3 * sizeof(float)));
 
             whiteTexture = GL.GenTexture();
             GL.BindTexture(TextureTarget.Texture2D, whiteTexture);
@@ -127,7 +189,7 @@ namespace osu.Framework.Platform.OpenXR
         /// Must be called on the GL thread.
         /// </summary>
         public static OpenXRControllerRenderer Create(XrFunctions xr, ulong instance, ulong systemId, ulong session, long format, XrStructureType imageType,
-                                                      float resolutionScale)
+                                                      float resolutionScale, OpenXRViewLocator viewLocator)
         {
             var configViews = stackalloc XrViewConfigurationView[2];
             configViews[0] = new XrViewConfigurationView { type = XR_TYPE_VIEW_CONFIGURATION_VIEW };
@@ -141,7 +203,7 @@ namespace osu.Framework.Platform.OpenXR
                 Math.Max(64, (int)(configViews[0].recommendedImageRectWidth * resolutionScale)),
                 Math.Max(64, (int)(configViews[0].recommendedImageRectHeight * resolutionScale)));
 
-            return new OpenXRControllerRenderer(xr, session, format, imageType, size);
+            return new OpenXRControllerRenderer(xr, session, format, imageType, size) { ViewLocator = viewLocator };
         }
 
         /// <summary>
@@ -153,14 +215,27 @@ namespace osu.Framework.Platform.OpenXR
         /// <param name="activeHand">The controller driving the pointer.</param>
         /// <param name="accent">The accent colour (gamma-encoded RGB).</param>
         /// <param name="models">Models of the actual controllers, posed for this frame. Hands without one get the built-in model.</param>
-        public void Render(ulong space, long displayTime, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models)
+        /// <param name="environment">An environment prepared for this frame to draw behind everything else, or null.</param>
+        /// <param name="surfaces">Game images to draw behind the controllers, back to front.</param>
+        /// <param name="showControllers">Whether the controllers are drawn (otherwise only the surfaces).</param>
+        public void Render(ulong space, long displayTime, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models,
+                           ReadOnlySpan<Surface> surfaces = default, bool showControllers = true, OpenXREnvironmentRenderer? environment = null)
         {
             HasRendered = false;
 
+            // Surfaces are always drawn: they're the game itself.
             bool anyVisible = false;
             bool viewsLocated = false;
 
-            for (int hand = 0; hand < hands.Length && !anyVisible; hand++)
+            if (surfaces.Length > 0 || environment != null)
+            {
+                if (!locateViews(space, displayTime))
+                    return;
+
+                anyVisible = viewsLocated = true;
+            }
+
+            for (int hand = 0; showControllers && hand < hands.Length && !anyVisible; hand++)
             {
                 if (!tracked(hand, hands, models, out var position))
                     continue;
@@ -203,7 +278,7 @@ namespace osu.Framework.Platform.OpenXR
                 releaseGpuModels();
 
                 for (int eye = 0; eye < 2; eye++)
-                    renderEye(eye, hands, activeHand, accent, models);
+                    renderEye(eye, hands, activeHand, accent, models, surfaces, showControllers, environment);
 
                 HasRendered = true;
             }
@@ -225,29 +300,12 @@ namespace osu.Framework.Platform.OpenXR
             return hands[hand].GripValid;
         }
 
-        private bool locateViews(ulong space, long displayTime)
-        {
-            var locateInfo = new XrViewLocateInfo
-            {
-                type = XR_TYPE_VIEW_LOCATE_INFO,
-                viewConfigurationType = XrViewConfigurationType.XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
-                displayTime = displayTime,
-                space = space,
-            };
+        /// <summary>
+        /// Locates the views for each frame, shared with the frame's other projection layers.
+        /// </summary>
+        public required OpenXRViewLocator ViewLocator { get; init; }
 
-            var viewState = new XrViewState { type = XR_TYPE_VIEW_STATE };
-            uint count;
-
-            fixed (XrView* v = views)
-            {
-                v[0].type = XR_TYPE_VIEW;
-                v[1].type = XR_TYPE_VIEW;
-                xr.xrLocateViews(session, &locateInfo, &viewState, 2, &count, v).ThrowIfFailed(nameof(xr.xrLocateViews));
-            }
-
-            const ulong valid = XrViewStateFlags.XR_VIEW_STATE_POSITION_VALID_BIT | XrViewStateFlags.XR_VIEW_STATE_ORIENTATION_VALID_BIT;
-            return count == 2 && (viewState.viewStateFlags & valid) == valid;
-        }
+        private bool locateViews(ulong space, long displayTime) => ViewLocator.Locate(space, displayTime, views);
 
         private static bool isInView(in XrView view, Vector3 point)
         {
@@ -265,7 +323,8 @@ namespace osu.Framework.Platform.OpenXR
                                                                    && p.Y > MathF.Tan(view.fov.angleDown) * d - margin && p.Y < MathF.Tan(view.fov.angleUp) * d + margin;
         }
 
-        private void renderEye(int eye, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models)
+        private void renderEye(int eye, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models, ReadOnlySpan<Surface> surfaces,
+                               bool showControllers, OpenXREnvironmentRenderer? environment)
         {
             var target = eyes[eye];
             int framebuffer = target.Acquire();
@@ -279,7 +338,13 @@ namespace osu.Framework.Platform.OpenXR
             Matrix4x4.Invert(Matrix4x4.CreateFromQuaternion(view.pose.orientation.ToNumerics()) * Matrix4x4.CreateTranslation(eyePosition), out var viewMatrix);
             var viewProjection = viewMatrix * projection(view.fov);
 
-            for (int hand = 0; hand < hands.Length; hand++)
+            // The whole scene in one layer, back to front: SteamVR only keeps its first projection layer steady as the head moves.
+            environment?.DrawInto(view);
+
+            if (surfaces.Length > 0)
+                drawSurfaces(surfaces, viewProjection);
+
+            for (int hand = 0; showControllers && hand < hands.Length; hand++)
             {
                 if (models?.Hands[hand] is { Visible: true } model)
                 {
@@ -303,6 +368,84 @@ namespace osu.Framework.Platform.OpenXR
             GL.InvalidateFramebuffer(FramebufferTarget.Framebuffer, 1, discard);
 
             target.Release();
+        }
+
+        /// <summary>
+        /// Draws the game's surfaces back to front, without depth: the controllers are always shown in front of them.
+        /// </summary>
+        private void drawSurfaces(ReadOnlySpan<Surface> surfaces, Matrix4x4 viewProjection)
+        {
+            GL.Disable(EnableCap.DepthTest);
+            GL.Disable(EnableCap.CullFace);
+            GL.UseProgram(surfaceProgram);
+            GL.BindVertexArray(surfaceVertexArray);
+            GL.BindBuffer(BufferTarget.ArrayBuffer, surfaceVertexBuffer);
+            setMatrix(sViewProjection, viewProjection);
+            GL.Uniform1(sTexture, 0);
+
+            foreach (ref readonly var surface in surfaces)
+            {
+                var geometry = surface.Geometry;
+
+                GL.BindTexture(TextureTarget.Texture2D, surface.Texture);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+
+                // The game's output is gamma-encoded in an sRGB image, and is stored the same way here: sample the stored values as-is.
+                const TextureParameterName texture_srgb_decode_ext = (TextureParameterName)0x8A48;
+                const int skip_decode_ext = 0x8A4A;
+                GL.TexParameter(TextureTarget.Texture2D, texture_srgb_decode_ext, skip_decode_ext);
+
+                GL.Uniform1(sOpaque, surface.Opaque ? 1f : 0f);
+
+                // One strip per band of rows. Only a sphere section curves vertically.
+                int bands = surface.SphereRadius > 0 ? surface_sphere_bands : 1;
+
+                for (int band = 0; band < bands; band++)
+                {
+                    int n = 0;
+
+                    for (int i = 0; i <= surface_segments; i++)
+                    {
+                        float u = (float)i / surface_segments;
+
+                        for (int row = 0; row < 2; row++)
+                        {
+                            float v = (float)(band + row) / bands;
+                            Vector3 p;
+
+                            if (geometry != null)
+                                p = geometry.FromPanelSpace(geometry.SurfacePointLocal(new Vector2(u, v)));
+                            else if (surface.SphereRadius > 0)
+                            {
+                                float yaw = (u - 0.5f) * surface.QuadSize.X;
+                                float pitch = (0.5f - v) * surface.QuadSize.Y;
+                                var local = new Vector3(MathF.Cos(pitch) * MathF.Sin(yaw), MathF.Sin(pitch), -MathF.Cos(pitch) * MathF.Cos(yaw)) * surface.SphereRadius;
+                                p = surface.QuadCentre + Vector3.Transform(local, surface.QuadOrientation);
+                            }
+                            else
+                                p = surface.QuadCentre + Vector3.Transform(new Vector3((u - 0.5f) * surface.QuadSize.X, (0.5f - v) * surface.QuadSize.Y, 0), surface.QuadOrientation);
+
+                            surfaceVertices[n++] = p.X;
+                            surfaceVertices[n++] = p.Y;
+                            surfaceVertices[n++] = p.Z;
+                            surfaceVertices[n++] = u;
+                            // Game images are bottom-up in GL.
+                            surfaceVertices[n++] = 1 - v;
+                        }
+                    }
+
+                    fixed (float* vertices = surfaceVertices)
+                        GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, (IntPtr)(surfaceVertices.Length * sizeof(float)), (IntPtr)vertices);
+
+                    GL.DrawArrays(PrimitiveType.TriangleStrip, 0, (surface_segments + 1) * 2);
+                }
+            }
+
+            GL.Enable(EnableCap.DepthTest);
+            GL.Enable(EnableCap.CullFace);
         }
 
         /// <summary>
@@ -663,6 +806,34 @@ namespace osu.Framework.Platform.OpenXR
         #endregion
 
         #region Shaders
+
+        private const string surface_vertex_shader = @"#version 300 es
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec2 a_uv;
+uniform mat4 u_viewProjection;
+out vec2 v_uv;
+void main()
+{
+    v_uv = a_uv;
+    gl_Position = u_viewProjection * vec4(a_position, 1.0);
+}";
+
+        private const string surface_fragment_shader = @"#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_texture;
+uniform float u_opaque;
+out vec4 o_colour;
+void main()
+{
+    // Game images have no mipmaps: four samples spread over the pixel's footprint keep text and thin lines from shimmering where
+    // the image is shown smaller than it is, and change nothing where it's shown larger.
+    vec2 dx = dFdx(v_uv) * 0.25;
+    vec2 dy = dFdy(v_uv) * 0.25;
+    vec4 c = (texture(u_texture, v_uv + dx + dy) + texture(u_texture, v_uv + dx - dy)
+              + texture(u_texture, v_uv - dx + dy) + texture(u_texture, v_uv - dx - dy)) * 0.25;
+    o_colour = vec4(c.rgb, max(c.a, u_opaque));
+}";
 
         private const string vertex_shader = @"#version 300 es
 layout(location = 0) in vec3 a_position;

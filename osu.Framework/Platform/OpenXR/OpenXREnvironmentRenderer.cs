@@ -109,16 +109,20 @@ namespace osu.Framework.Platform.OpenXR
 
         public bool HasRendered { get; private set; }
 
+        private readonly long format;
+        private readonly XrStructureType imageType;
+        private readonly Size eyeSize;
+
         private OpenXREnvironmentRenderer(XrFunctions xr, ulong session, long format, XrStructureType imageType, Size eyeSize)
         {
             this.xr = xr;
             this.session = session;
+            this.format = format;
+            this.imageType = imageType;
+            this.eyeSize = eyeSize;
 
             // Setting up changes GL state the framework caches (e.g. the clear colour, via the 1x1 targets' initial clears).
             var state = GLState.Capture();
-
-            for (int i = 0; i < 2; i++)
-                eyes[i] = new OpenXRSwapchainTarget(xr, session, eyeSize, format, imageType);
 
             sceneProgram = compileProgram(scene_fragment);
             luminanceProgram = compileProgram(luminance_fragment);
@@ -146,7 +150,7 @@ namespace osu.Framework.Platform.OpenXR
         /// Must be called on the GL thread.
         /// </summary>
         public static OpenXREnvironmentRenderer Create(XrFunctions xr, ulong instance, ulong systemId, ulong session, long format, XrStructureType imageType,
-                                                       float resolutionScale)
+                                                       float resolutionScale, OpenXRViewLocator viewLocator)
         {
             var configViews = stackalloc XrViewConfigurationView[2];
             configViews[0] = new XrViewConfigurationView { type = XR_TYPE_VIEW_CONFIGURATION_VIEW };
@@ -160,7 +164,7 @@ namespace osu.Framework.Platform.OpenXR
                 Math.Max(64, (int)(configViews[0].recommendedImageRectWidth * resolutionScale)),
                 Math.Max(64, (int)(configViews[0].recommendedImageRectHeight * resolutionScale)));
 
-            return new OpenXREnvironmentRenderer(xr, session, format, imageType, size);
+            return new OpenXREnvironmentRenderer(xr, session, format, imageType, size) { ViewLocator = viewLocator };
         }
 
         /// <summary>
@@ -176,35 +180,30 @@ namespace osu.Framework.Platform.OpenXR
         }
 
         /// <summary>
+        /// Locates the views for each frame, shared with the frame's other projection layers.
+        /// </summary>
+        public required OpenXRViewLocator ViewLocator { get; init; }
+
+        /// <summary>
         /// Renders both eyes for the given frame.
         /// </summary>
         /// <param name="space">The base space the views are located in (and the layer is submitted in).</param>
         /// <param name="displayTime">The frame's predicted display time.</param>
         /// <param name="scene">Where the floor, grid, wall and glow are, in <paramref name="space"/>.</param>
         /// <param name="backgroundTexture">The GL texture holding the game's background this frame, or 0 if none.</param>
-        public void Render(ulong space, long displayTime, in EnvironmentScene scene, int backgroundTexture)
+        /// <param name="ownLayer">
+        /// Whether to render the environment to this renderer's own images, for a layer of its own (see <see cref="FillLayer"/>).
+        /// Otherwise the frame is only prepared, for another renderer to draw the environment into its images with <see cref="DrawInto"/>.
+        /// </param>
+        public void Render(ulong space, long displayTime, in EnvironmentScene scene, int backgroundTexture, bool ownLayer = true)
         {
             HasRendered = false;
 
-            var locateInfo = new XrViewLocateInfo
-            {
-                type = XR_TYPE_VIEW_LOCATE_INFO,
-                viewConfigurationType = XrViewConfigurationType.XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
-                displayTime = displayTime,
-                space = space,
-            };
-
-            var viewState = new XrViewState { type = XR_TYPE_VIEW_STATE };
-            uint count;
-
-            views[0].type = views[1].type = XR_TYPE_VIEW;
-
-            fixed (XrView* v = views)
-                xr.xrLocateViews(session, &locateInfo, &viewState, 2, &count, v).ThrowIfFailed(nameof(xr.xrLocateViews));
-
-            const ulong valid = XrViewStateFlags.XR_VIEW_STATE_POSITION_VALID_BIT | XrViewStateFlags.XR_VIEW_STATE_ORIENTATION_VALID_BIT;
-            if ((viewState.viewStateFlags & valid) != valid)
+            if (ownLayer && !ViewLocator.Locate(space, displayTime, views))
                 return;
+
+            pendingScene = scene;
+            pendingBackgroundTexture = backgroundTexture;
 
             float dt = lastRenderTime == 0 ? 0 : Math.Clamp((displayTime - lastRenderTime) / 1e9f, 0, 0.1f);
             lastRenderTime = displayTime;
@@ -227,10 +226,42 @@ namespace osu.Framework.Platform.OpenXR
                 updateFlashLimiter(backgroundTexture, dt);
                 updateAmbientColour(backgroundTexture, dt);
 
-                for (int eye = 0; eye < 2; eye++)
-                    renderEye(eye, scene, backgroundTexture);
+                if (ownLayer)
+                {
+                    for (int eye = 0; eye < 2; eye++)
+                        renderEye(eye, scene, backgroundTexture);
+                }
 
                 HasRendered = true;
+            }
+            finally
+            {
+                state.Restore();
+            }
+        }
+
+        private EnvironmentScene pendingScene;
+        private int pendingBackgroundTexture;
+
+        /// <summary>
+        /// Draws the environment prepared by the last <see cref="Render"/> over the whole of the bound framebuffer (with its viewport),
+        /// as seen from <paramref name="view"/>. Leaves the GL state as it was.
+        /// </summary>
+        public void DrawInto(in XrView view)
+        {
+            var state = GLState.Capture();
+
+            try
+            {
+                GL.BindVertexArray(vertexArray);
+                GL.Disable(EnableCap.ScissorTest);
+                GL.Disable(EnableCap.DepthTest);
+                GL.Disable(EnableCap.Blend);
+                GL.Disable(EnableCap.CullFace);
+                GL.ColorMask(true, true, true, true);
+                GL.ActiveTexture(TextureUnit.Texture0);
+
+                drawScene(view, pendingScene, pendingBackgroundTexture);
             }
             finally
             {
@@ -318,13 +349,24 @@ namespace osu.Framework.Platform.OpenXR
 
         private void renderEye(int eye, in EnvironmentScene scene, int backgroundTexture)
         {
-            var target = eyes[eye];
+            // Created when first needed: not at all when the environment is only ever drawn into another renderer's images.
+            var target = eyes[eye] ??= new OpenXRSwapchainTarget(xr, session, eyeSize, format, imageType);
             int framebuffer = target.Acquire();
 
             GL.BindFramebuffer(FramebufferTarget.Framebuffer, framebuffer);
             GL.Viewport(0, 0, target.Size.Width, target.Size.Height);
 
-            var view = views[eye];
+            drawScene(views[eye], scene, backgroundTexture);
+
+            // Only the colour matters; let tiled GPUs skip storing the depth/stencil attachment.
+            var discard = stackalloc FramebufferAttachment[] { FramebufferAttachment.DepthStencilAttachment };
+            GL.InvalidateFramebuffer(FramebufferTarget.Framebuffer, 1, discard);
+
+            target.Release();
+        }
+
+        private void drawScene(in XrView view, in EnvironmentScene scene, int backgroundTexture)
+        {
             Quaternion orientation = view.pose.orientation.ToNumerics();
 
             GL.UseProgram(sceneProgram);
@@ -362,12 +404,6 @@ namespace osu.Framework.Platform.OpenXR
             GL.Uniform1(GL.GetUniformLocation(sceneProgram, "u_ambient"), 3);
 
             GL.DrawArrays(PrimitiveType.Triangles, 0, 3);
-
-            // Only the colour matters; let tiled GPUs skip storing the depth/stencil attachment.
-            var discard = stackalloc FramebufferAttachment[] { FramebufferAttachment.DepthStencilAttachment };
-            GL.InvalidateFramebuffer(FramebufferTarget.Framebuffer, 1, discard);
-
-            target.Release();
         }
 
         private void setUniform(string name, Vector3 v) => GL.Uniform3(GL.GetUniformLocation(sceneProgram, name), v.X, v.Y, v.Z);

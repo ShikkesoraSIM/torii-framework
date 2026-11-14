@@ -64,5 +64,10 @@ namespace osu.Framework.Platform.OpenXR
 
         // Desktop GL leaves GL_FRAMEBUFFER_SRGB disabled unless enabled, so values are written to sRGB images untouched.
         public bool CanDisableSrgbWrites => true;
+
+        // Desktop GPUs render both at the full recommended resolution with ease.
+        public float EnvironmentResolutionScale => 1;
+
+        public float ControllerResolutionScale => 1;
     }
 }

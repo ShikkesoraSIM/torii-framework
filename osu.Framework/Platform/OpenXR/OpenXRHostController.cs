@@ -63,6 +63,12 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public IBindable<bool> IsDisplayed => isDisplayed;
 
+        /// <summary>
+        /// The title for a desktop host's window: says so when the game isn't being displayed in the headset (e.g. it's idle and the
+        /// runtime is in standby), as the window itself shows nothing and the game would otherwise just look frozen.
+        /// </summary>
+        public static string WindowTitle(string gameTitle, bool displayed) => displayed ? gameTitle : $"{gameTitle} (VR: waiting for the headset)";
+
         private readonly BindableBool supportsPassthrough = new BindableBool(true);
 
         /// <summary>

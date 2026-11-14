@@ -69,7 +69,7 @@ namespace osu.Framework.Platform.SDL3
         /// <summary>
         /// Gets and sets the window title.
         /// </summary>
-        public string Title
+        public virtual string Title
         {
             get => title;
             set

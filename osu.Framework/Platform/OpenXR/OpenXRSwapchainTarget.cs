@@ -4,6 +4,7 @@
 using System;
 using System.Drawing;
 using System.Linq;
+using osu.Framework.Logging;
 using osu.Framework.Platform.OpenXR.Native;
 using osuTK.Graphics.ES30;
 using static osu.Framework.Platform.OpenXR.Native.XrStructureType;
@@ -77,8 +78,14 @@ namespace osu.Framework.Platform.OpenXR
                 mipCount = 1,
             };
 
+            // SteamVR fails swapchain creation (XR_ERROR_RUNTIME_FAILURE) if a GL error is already pending on the context.
+            for (var e = GL.GetError(); e != ErrorCode.NoError; e = GL.GetError())
+                Logger.Log($"OpenXR: discarding pending GL error {e} before creating a swapchain.");
+
             ulong created;
-            xr.xrCreateSwapchain(session, &createInfo, &created).ThrowIfFailed(nameof(xr.xrCreateSwapchain));
+            var textureBindings = GLTextureBindings.Capture();
+            xr.xrCreateSwapchain(session, &createInfo, &created).ThrowIfFailed($"{nameof(xr.xrCreateSwapchain)} ({size.Width}x{size.Height}, format 0x{format:X})");
+            textureBindings.Restore();
             Swapchain = created;
 
             uint imageCount;

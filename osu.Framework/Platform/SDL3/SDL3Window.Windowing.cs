@@ -325,6 +325,22 @@ namespace osu.Framework.Platform.SDL3
         }
 
         /// <summary>
+        /// Updates <see cref="Displays"/> only if they differ from the displays currently reported by SDL.
+        /// </summary>
+        private void fetchDisplaysIfChanged()
+        {
+            var newDisplays = getSDLDisplays();
+
+            if (newDisplays.Length == 0 || newDisplays.SequenceEqual(Displays))
+                return;
+
+            Logger.Log($"Displays changed without a display event, updating:\n  {string.Join("\n  ", newDisplays)}");
+
+            Displays = newDisplays;
+            DisplaysChanged?.Invoke(newDisplays);
+        }
+
+        /// <summary>
         /// Asserts that the current <see cref="Displays"/> match the actual displays as reported by SDL.
         /// </summary>
         /// <remarks>
@@ -569,6 +585,11 @@ namespace osu.Framework.Platform.SDL3
                     fetchDisplays();
                     break;
             }
+
+            // Wayland compositors can change the display bounds without SDL sending a display event or any of the window events above
+            // (eg. when the scale of the output changes), so check on every window event there.
+            if (IsWayland)
+                EventScheduler.AddOnce(fetchDisplaysIfChanged);
 
 #if DEBUG
             EventScheduler.AddOnce(() => assertDisplaysMatchSDL());

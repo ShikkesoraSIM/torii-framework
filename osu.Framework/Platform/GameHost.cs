@@ -1485,8 +1485,18 @@ namespace osu.Framework.Platform
                     updateLimiter = toriiHz;
             }
 
+            AdjustFrameLimiters(ref drawLimiter, ref updateLimiter);
+
             MaximumDrawHz = drawLimiter;
             MaximumUpdateHz = effectiveExecutionMode == ExecutionMode.SingleThread ? drawLimiter : updateLimiter;
+        }
+
+        /// <summary>
+        /// Torii: lets a host which paces its frames some other way than by the window's display (e.g. by a headset) change the limits
+        /// derived from <see cref="FrameworkSetting.FrameSync"/>, in Hz. In single-threaded execution updates run at the draw limit.
+        /// </summary>
+        protected virtual void AdjustFrameLimiters(ref double drawLimiter, ref double updateLimiter)
+        {
         }
 
         // torii: los renderers deferred graban command buffers por frame de update; si el update corre

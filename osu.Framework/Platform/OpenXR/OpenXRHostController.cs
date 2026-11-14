@@ -3,8 +3,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using osu.Framework.Bindables;
 using osu.Framework.Graphics.OpenGL;
 using osu.Framework.Graphics.Rendering;
@@ -28,7 +30,18 @@ namespace osu.Framework.Platform.OpenXR
     /// <remarks>
     /// The game renders as usual, but into a virtual 2D panel (an OpenXR swapchain image) instead of the window,
     /// and frames are paced and presented by the OpenXR runtime (xrWaitFrame / xrEndFrame) instead of a buffer swap.
-    /// Requires the GL renderer and single-threaded execution: the frame is waited for before the update and rendered in the draw.
+    /// Requires the GL renderer. Everything here that talks to the runtime happens on the thread drawing the game.
+    /// <list type="bullet">
+    /// <item>
+    /// In single-threaded execution the host calls <see cref="BeforeUpdate"/> ahead of each update: the frame is waited for there, so
+    /// that the update consumes controller input sampled for the very frame it produces.
+    /// </item>
+    /// <item>
+    /// In multi-threaded execution (see <see cref="ScheduleToUpdate"/>) the frame is waited for in <see cref="Draw"/>, pacing the draw
+    /// thread alone: the update thread runs at its own rate, so input from other devices (mouse, tablet, keyboard) is processed far
+    /// more often than the headset refreshes, and each frame shows the latest update.
+    /// </item>
+    /// </list>
     /// </remarks>
     public class OpenXRHostController : IDisposable
     {
@@ -66,8 +79,7 @@ namespace osu.Framework.Platform.OpenXR
         private readonly BindableBool supportsPassthrough = new BindableBool(true);
 
         /// <summary>
-        /// Whether the runtime can show the room (<see cref="XrEnvironmentMode.Passthrough"/>). Assumed until the session has started;
-        /// changes on the draw thread.
+        /// Whether the runtime can show the room (<see cref="XrEnvironmentMode.Passthrough"/>). Assumed until the session has started.
         /// </summary>
         public IBindable<bool> SupportsPassthrough => supportsPassthrough;
 
@@ -92,6 +104,48 @@ namespace osu.Framework.Platform.OpenXR
         /// first): nothing is displayed in the headset from then on. See <see cref="Failed"/>.
         /// </summary>
         public event Action? SessionFailed;
+
+        /// <summary>
+        /// Runs an action on the update thread. Set by a host running multi-threaded, before it runs: the session then lives on the draw
+        /// thread, and what the game binds to (<see cref="HasInputFocus"/>, <see cref="IsDisplayed"/>, <see cref="SupportsPassthrough"/>)
+        /// changes on the update thread still. The events are invoked on the draw thread regardless.
+        /// </summary>
+        public Action<Action>? ScheduleToUpdate { get; set; }
+
+        private void onUpdateThread(Action action)
+        {
+            if (ScheduleToUpdate is { } schedule)
+                schedule(action);
+            else
+                action();
+        }
+
+        private long updateFrames;
+
+        /// <summary>
+        /// Call after each of the host's update frames when running multi-threaded (see <see cref="ScheduleToUpdate"/>).
+        /// </summary>
+        public void AfterUpdate() => Interlocked.Increment(ref updateFrames);
+
+        /// <summary>
+        /// The longest the draw thread waits for the update thread to process controller input, in milliseconds.
+        /// </summary>
+        private const double controller_input_wait = 2.5;
+
+        /// <summary>
+        /// Multi-threaded: gives the update thread a moment to process the controller input just sampled, so that it's in the frame
+        /// about to be drawn rather than the next (the pointer would trail the controller by another frame).
+        /// </summary>
+        private void waitForUpdateThread()
+        {
+            // An update frame in progress may have collected its input already: the one after it has for sure.
+            long target = Interlocked.Read(ref updateFrames) + 2;
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            while (Interlocked.Read(ref updateFrames) < target
+                   && System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds < controller_input_wait)
+                Thread.SpinWait(20);
+        }
 
         /// <summary>
         /// When set, a headset which isn't there yet (e.g. a wireless headset not connected to the runtime) is waited for rather than
@@ -150,8 +204,14 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public OpenXRInputHandler ControllerInput => xrInput;
 
+        // The panel's placement is set by the game (update thread) and changed by the user grabbing the panel (on the thread running
+        // the session): the session's own copy is only touched by the latter, and exchanged with this one once per frame.
+        private readonly object panelLock = new object();
         private float panelDistance = 1.5f;
         private float panelAngle = 60 * MathF.PI / 180;
+        private System.Numerics.Vector3 panelOffset;
+        private System.Numerics.Quaternion panelRotation = OpenXRSession.DefaultPanelRotation;
+        private bool panelPlacementSet;
 
         /// <summary>
         /// Distance of the game panel from its centre of curvature (the viewer, unless the panel was moved), in metres. Also changed by the
@@ -159,11 +219,17 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public float PanelDistance
         {
-            get => xr?.PanelDistance ?? panelDistance;
+            get
+            {
+                lock (panelLock) return panelDistance;
+            }
             set
             {
-                panelDistance = value;
-                if (xr != null) xr.PanelDistance = value;
+                lock (panelLock)
+                {
+                    panelDistance = value;
+                    panelPlacementSet = true;
+                }
             }
         }
 
@@ -172,16 +238,19 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public float PanelHorizontalAngle
         {
-            get => xr?.PanelHorizontalAngle ?? panelAngle;
+            get
+            {
+                lock (panelLock) return panelAngle;
+            }
             set
             {
-                panelAngle = value;
-                if (xr != null) xr.PanelHorizontalAngle = value;
+                lock (panelLock)
+                {
+                    panelAngle = value;
+                    panelPlacementSet = true;
+                }
             }
         }
-
-        private System.Numerics.Vector3 panelOffset;
-        private System.Numerics.Quaternion panelRotation = OpenXRSession.DefaultPanelRotation;
 
         /// <summary>
         /// Where the panel's centre of curvature is relative to where the viewer was facing when last recentered (in that frame: +X right,
@@ -189,11 +258,17 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public System.Numerics.Vector3 PanelOffset
         {
-            get => xr?.PanelOffset ?? panelOffset;
+            get
+            {
+                lock (panelLock) return panelOffset;
+            }
             set
             {
-                panelOffset = value;
-                if (xr != null) xr.PanelOffset = value;
+                lock (panelLock)
+                {
+                    panelOffset = value;
+                    panelPlacementSet = true;
+                }
             }
         }
 
@@ -203,11 +278,17 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public System.Numerics.Quaternion PanelRotation
         {
-            get => xr?.PanelRotation ?? panelRotation;
+            get
+            {
+                lock (panelLock) return panelRotation;
+            }
             set
             {
-                panelRotation = value;
-                if (xr != null) xr.PanelRotation = value;
+                lock (panelLock)
+                {
+                    panelRotation = value;
+                    panelPlacementSet = true;
+                }
             }
         }
 
@@ -216,8 +297,48 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public void ResetPanelPlacement()
         {
-            PanelOffset = System.Numerics.Vector3.Zero;
-            PanelRotation = OpenXRSession.DefaultPanelRotation;
+            lock (panelLock)
+            {
+                panelOffset = System.Numerics.Vector3.Zero;
+                panelRotation = OpenXRSession.DefaultPanelRotation;
+                panelPlacementSet = true;
+            }
+        }
+
+        /// <summary>
+        /// Gives the session a placement set since the last frame. Call before anything uses the session's placement.
+        /// </summary>
+        private void applyPanelPlacement(OpenXRSession session)
+        {
+            lock (panelLock)
+            {
+                if (!panelPlacementSet)
+                    return;
+
+                session.PanelDistance = panelDistance;
+                session.PanelHorizontalAngle = panelAngle;
+                session.PanelOffset = panelOffset;
+                session.PanelRotation = panelRotation;
+                panelPlacementSet = false;
+            }
+        }
+
+        /// <summary>
+        /// Takes over the session's placement, which the user may have changed by grabbing the panel.
+        /// </summary>
+        private void readPanelPlacement(OpenXRSession session)
+        {
+            lock (panelLock)
+            {
+                // Set again in the meantime: that wins, next frame.
+                if (panelPlacementSet)
+                    return;
+
+                panelDistance = session.PanelDistance;
+                panelAngle = session.PanelHorizontalAngle;
+                panelOffset = session.PanelOffset;
+                panelRotation = session.PanelRotation;
+            }
         }
 
         /// <summary>
@@ -376,7 +497,7 @@ namespace osu.Framework.Platform.OpenXR
         }
 
         /// <summary>
-        /// Call at the start of the host's update frame, before the game updates.
+        /// Single-threaded execution only: call at the start of the host's update frame, before the game updates.
         /// </summary>
         /// <remarks>
         /// In single-threaded execution the loop runs input, audio, update then draw. Waiting for the XR frame here (rather than in
@@ -388,7 +509,19 @@ namespace osu.Framework.Platform.OpenXR
             if (xr is not { IsSessionRunning: true, FrameWaited: false } || Failed)
                 return;
 
+            waitFrame();
+        }
+
+        /// <summary>
+        /// Waits for the runtime to want the next frame, then samples the controllers for it and turns that into input.
+        /// </summary>
+        /// <returns>Whether controller input was processed.</returns>
+        private bool waitFrame()
+        {
+            Debug.Assert(xr != null);
+
             long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            bool processed = false;
 
             try
             {
@@ -397,6 +530,8 @@ namespace osu.Framework.Platform.OpenXR
                     xr.Input.AimRotationOffset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitX, -xrInput.PointerTilt);
                     xr.Input.AimPositionOffset = xrInput.PointerOffset;
                 }
+
+                applyPanelPlacement(xr);
 
                 frameTimer?.Enter(FrameTimer.Phase.Wait);
                 bool waited = xr.WaitFrame();
@@ -411,15 +546,19 @@ namespace osu.Framework.Platform.OpenXR
                     xrInput.ScrollExcludedHand = panelManipulator.GrabbingHand;
 
                     xrInput.Process(xr.Input!.Hands, xr);
+                    processed = true;
 
                     for (int hand = 0; hand < 2; hand++)
                     {
                         if (xrInput.TakeHaptic(hand) is { } pulse)
                             xr.Input.Vibrate(hand, pulse);
                     }
+
                     xr.PointerActiveHand = xrInput.ActiveHand;
                     xr.PointerEdgeTolerance = xrInput.EdgeTolerance;
                 }
+
+                readPanelPlacement(xr);
             }
             catch (Exception e)
             {
@@ -427,6 +566,7 @@ namespace osu.Framework.Platform.OpenXR
             }
 
             xrAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            return processed;
         }
 
         /// <summary>
@@ -461,7 +601,10 @@ namespace osu.Framework.Platform.OpenXR
                 {
                     // The desktop view says what's being waited for.
                     if (WaitingForHeadset)
+                    {
                         drawIdle(glRenderer, drawGame);
+                        idle();
+                    }
 
                     return;
                 }
@@ -476,8 +619,22 @@ namespace osu.Framework.Platform.OpenXR
 
                 if (!xr.IsSessionRunning)
                 {
+                    applyPanelPlacement(xr);
                     drawIdle(glRenderer, drawGame);
+                    idle();
                     return;
+                }
+
+                // Multi-threaded: the frame wasn't waited for ahead of an update (see BeforeUpdate), as updates aren't tied to frames.
+                if (!xr.FrameWaited)
+                {
+                    bool processedInput = waitFrame();
+
+                    if (Failed)
+                        return;
+
+                    if (processedInput && ScheduleToUpdate != null && xrInput.HadInput)
+                        waitForUpdateThread();
                 }
 
                 lock (externalTargets)
@@ -595,6 +752,12 @@ namespace osu.Framework.Platform.OpenXR
             return true;
         }
 
+        /// <summary>
+        /// Call when a frame went by without waiting on the runtime, which is what paces the thread otherwise: nothing else may be
+        /// limiting it (see the hosts' frame limiters), and it shouldn't spin.
+        /// </summary>
+        private static void idle() => Thread.Sleep(2);
+
         private bool debugFlag(string name) => debugDirectory != null && File.Exists(Path.Combine(debugDirectory, name));
 
         private bool tryCreateSession(GLRenderer glRenderer)
@@ -610,7 +773,8 @@ namespace osu.Framework.Platform.OpenXR
                 };
                 xr.CreateSession();
                 RuntimeName = xr.RuntimeName;
-                supportsPassthrough.Value = xr.EnabledExtensions.Contains("XR_FB_passthrough");
+                bool passthrough = xr.EnabledExtensions.Contains("XR_FB_passthrough");
+                onUpdateThread(() => supportsPassthrough.Value = passthrough);
 
                 if (debugFlag("debug-frame-timing"))
                     frameTimer = new FrameTimer();
@@ -620,17 +784,22 @@ namespace osu.Framework.Platform.OpenXR
                 xr.FlashReduction = flashReduction;
                 xr.ShowControllers = showControllers;
                 xr.HeldModel = heldModel;
-                xr.PanelDistance = panelDistance;
-                xr.PanelHorizontalAngle = panelAngle;
-                xr.PanelOffset = panelOffset;
-                xr.PanelRotation = panelRotation;
+
+                lock (panelLock)
+                    panelPlacementSet = true;
+
+                applyPanelPlacement(xr);
 
                 xr.StateChanged += state =>
                 {
                     bool focused = state == XrSessionState.XR_SESSION_STATE_FOCUSED;
+                    bool displayed = focused || state == XrSessionState.XR_SESSION_STATE_VISIBLE;
 
-                    isDisplayed.Value = focused || state == XrSessionState.XR_SESSION_STATE_VISIBLE;
-                    hasInputFocus.Value = focused;
+                    onUpdateThread(() =>
+                    {
+                        isDisplayed.Value = displayed;
+                        hasInputFocus.Value = focused;
+                    });
                 };
 
                 xr.ExitRequested += () => ExitRequested?.Invoke();

@@ -19,7 +19,9 @@ namespace osu.Framework.Platform.Linux
     /// See <see cref="OpenXRHostController"/>.
     /// </summary>
     /// <remarks>
-    /// Always uses the GL renderer on an EGL context, with single-threaded execution.
+    /// Always uses the GL renderer on an EGL context. Runs multi-threaded: the headset paces the draw thread, while updates (and with
+    /// them input from the mouse, tablet and keyboard) run at their own, higher rate. The environment variable
+    /// <c>OSU_OPENXR_SINGLE_THREAD=1</c> goes back to single-threaded execution, with one update per headset frame.
     /// The window stays as a regular desktop window, but is not presented to.
     /// </remarks>
     public class OpenXRLinuxGameHost : LinuxGameHost, IOpenXRHost
@@ -46,10 +48,18 @@ namespace osu.Framework.Platform.Linux
             };
             OpenXR.PresentsDesktopView = true;
             drawGame = () => base.DrawFrame();
+
+            if (!singleThreaded)
+                OpenXR.ScheduleToUpdate = action => UpdateThread.Scheduler.Add(action);
         }
 
-        // The XR frame is waited for before the update and rendered in the draw, so both must run on one thread.
-        protected override ExecutionMode? ForcedExecutionMode => ExecutionMode.SingleThread;
+        private readonly bool singleThreaded = Environment.GetEnvironmentVariable("OSU_OPENXR_SINGLE_THREAD") == "1";
+
+        // Regardless of the user's choice for the desktop: single-threaded, updates (and so all input) are tied to the headset's frames.
+        protected override ExecutionMode? ForcedExecutionMode => singleThreaded ? ExecutionMode.SingleThread : ExecutionMode.MultiThreaded;
+
+        // Frames are paced by the headset, whatever the window's display would call for.
+        protected override void AdjustFrameLimiters(ref double drawLimiter, ref double updateLimiter) => drawLimiter = int.MaxValue;
 
         protected override void ChooseAndSetupRenderer() => SetupRendererAndWindow("gl", GraphicsSurfaceType.OpenGL);
 
@@ -63,8 +73,14 @@ namespace osu.Framework.Platform.Linux
 
         protected override void UpdateFrame()
         {
-            OpenXR.BeforeUpdate();
+            // Single-threaded, the XR frame is waited for before the update and rendered in the draw.
+            if (singleThreaded)
+                OpenXR.BeforeUpdate();
+
             base.UpdateFrame();
+
+            if (!singleThreaded)
+                OpenXR.AfterUpdate();
         }
 
         protected override void DrawFrame() => OpenXR.Draw(Renderer, drawGame);

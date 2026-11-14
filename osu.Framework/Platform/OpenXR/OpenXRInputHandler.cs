@@ -66,10 +66,31 @@ namespace osu.Framework.Platform.OpenXR
         /// Lets a consumer map each trigger itself, e.g. to separate gameplay keys, via <see cref="IsTriggerDown"/>.
         /// </summary>
         /// <remarks>
-        /// This is a per-frame request: it is cleared after every input frame and must be set again on every update it should keep applying.
-        /// That way a consumer which stops updating (e.g. a suspended screen) can never leave the triggers disabled.
+        /// This is a request which lapses: it must be set again on every update it should keep applying, and stops applying shortly
+        /// after the last time it was. That way a consumer which stops updating (e.g. a suspended screen) can never leave the triggers
+        /// disabled. (Updates and controller input aren't in step when the host runs multi-threaded, so it doesn't lapse with either.)
         /// </remarks>
-        public bool SuppressPointerButtons { get; set; }
+        public bool SuppressPointerButtons
+        {
+            get
+            {
+                long requested = Interlocked.Read(ref suppressRequestTimestamp);
+                return requested != 0 && Stopwatch.GetElapsedTime(requested).TotalMilliseconds < suppress_request_lifetime;
+            }
+            set => Interlocked.Exchange(ref suppressRequestTimestamp, value ? Stopwatch.GetTimestamp() : 0);
+        }
+
+        /// <summary>
+        /// How long a <see cref="SuppressPointerButtons"/> request lasts, in milliseconds: several frames of either kind.
+        /// </summary>
+        private const double suppress_request_lifetime = 100;
+
+        private long suppressRequestTimestamp;
+
+        /// <summary>
+        /// Whether the latest controller frame produced any input for the game.
+        /// </summary>
+        internal bool HadInput { get; private set; }
 
         /// <summary>
         /// How far the pointer ray is tilted down from the controller's aim direction, in radians (negative tilts it up).
@@ -199,7 +220,7 @@ namespace osu.Framework.Platform.OpenXR
             Vector2? hitFor(int hand) => hand == left ? leftHit : rightHit;
 
             bool suppressButtons = SuppressPointerButtons;
-            SuppressPointerButtons = false;
+            int inputsBefore = PendingInputs.Count;
 
             bool leftPressed = updateTrigger(left, hands[left].Trigger);
             bool rightPressed = updateTrigger(right, hands[right].Trigger);
@@ -249,7 +270,14 @@ namespace osu.Framework.Platform.OpenXR
                 PendingInputs.Enqueue(new KeyboardKeyInput(Key.Space, wantSpace));
                 spaceDown = wantSpace;
             }
+
+            // (The count only ever falls in between, by the update thread collecting the inputs.)
+            HadInput = PendingInputs.Count > inputsBefore || triggerChanged;
+            triggerChanged = false;
         }
+
+        // Triggers taken over by the game (see SuppressPointerButtons) are input too, though they produce none here.
+        private bool triggerChanged;
 
         /// <summary>
         /// Updates the pressed state of a trigger with hysteresis.
@@ -259,6 +287,7 @@ namespace osu.Framework.Platform.OpenXR
         {
             bool wasDown = triggerDown[hand];
             triggerDown[hand] = wasDown ? value > TriggerReleaseThreshold : value >= TriggerPressThreshold;
+            triggerChanged |= triggerDown[hand] != wasDown;
             return triggerDown[hand] && !wasDown;
         }
 

@@ -187,6 +187,9 @@ struct XrGraphicsRequirementsOpenGLKHR
 struct XrGraphicsBindingEGLMNDX
 function xrGetOpenGLGraphicsRequirementsKHR
 
+# Desktop OpenGL via WGL (XR_KHR_opengl_enable on Windows)
+struct XrGraphicsBindingOpenGLWin32KHR
+
 # Controller render models: XR_FB_render_model (Meta)
 flags XrRenderModelFlagsFB
 struct XrRenderModelPathInfoFB

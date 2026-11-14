@@ -23,7 +23,8 @@ namespace osu.Framework.Platform.OpenXR.Native
                     return handle;
             }
 
-            throw new DllNotFoundException("The OpenXR loader could not be found. On Android it must be packaged with the app (openxr_loader_for_android).");
+            throw new DllNotFoundException("The OpenXR loader could not be found. On Android and Windows it must be packaged with the app."
+                                           + " On Linux, install the distribution's OpenXR loader package (libopenxr_loader.so.1).");
         }
 
         private static string[] candidateNames()
@@ -34,7 +35,12 @@ namespace osu.Framework.Platform.OpenXR.Native
                     return new[] { "libopenxr_loader.so" };
 
                 case RuntimeInfo.Platform.Windows:
-                    return new[] { "openxr_loader.dll", "openxr_loader" };
+                    // Windows has no system-wide loader: applications ship their own.
+                    return new[]
+                    {
+                        "openxr_loader.dll",
+                        System.IO.Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "openxr", "openxr_loader.dll"),
+                    };
 
                 default:
                     return new[] { "libopenxr_loader.so.1", "libopenxr_loader.so" };

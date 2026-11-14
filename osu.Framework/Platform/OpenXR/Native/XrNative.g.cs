@@ -1909,6 +1909,15 @@ namespace osu.Framework.Platform.OpenXR.Native
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    public unsafe struct XrGraphicsBindingOpenGLWin32KHR
+    {
+        public XrStructureType type;
+        public void* next;
+        public nint hDC;
+        public nint hGLRC;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public unsafe struct XrRenderModelPathInfoFB
     {
         public XrStructureType type;

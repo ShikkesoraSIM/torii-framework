@@ -30,6 +30,7 @@ PRIMITIVES = {
     # Opaque platform types are passed through as pointers.
     'EGLDisplay': 'nint', 'EGLConfig': 'nint', 'EGLContext': 'nint', 'jobject': 'nint',
     'PFN_xrEglGetProcAddressMNDX': 'nint',
+    'HDC': 'nint', 'HGLRC': 'nint',
 }
 
 # Struct typedef aliases (e.g. "typedef XrUuid XrUuidEXT;"), bound as the aliased struct.

@@ -257,6 +257,11 @@ namespace osu.Framework.Graphics.Containers
         private readonly BufferedContainerDrawNodeSharedData sharedData;
 
         /// <summary>
+        /// The frame buffers this container draws to, for a subclass to create its own <see cref="BufferedContainerDrawNode"/> with.
+        /// </summary>
+        protected BufferedContainerDrawNodeSharedData SharedData => sharedData;
+
+        /// <summary>
         /// Constructs an empty buffered container.
         /// </summary>
         /// <param name="textureFormat">The main render buffer format.</param>

@@ -190,6 +190,11 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public event Action? AnchorChanged;
 
+        /// <summary>
+        /// Invoked when the user recentred through the system (e.g. holding the Meta button), ahead of the anchor being re-placed.
+        /// </summary>
+        public event Action? SystemRecentered;
+
         private bool recenterPending = true;
 
         /// <summary>
@@ -949,7 +954,10 @@ namespace osu.Framework.Platform.OpenXR
                         // The system recenter resets LOCAL's yaw and position (it stays level). Re-place the anchor from the head pose so
                         // pitch is honoured too: recentering while lying down brings the panel overhead.
                         if (change->referenceSpaceType == XrReferenceSpaceType.XR_REFERENCE_SPACE_TYPE_LOCAL)
+                        {
                             Recenter();
+                            SystemRecentered?.Invoke();
+                        }
                         break;
 
                     case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:

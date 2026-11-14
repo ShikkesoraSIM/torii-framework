@@ -345,11 +345,28 @@ namespace osu.Framework.Platform.OpenXR
         /// Invoked when the user finishes moving, turning, resizing or pushing/pulling the panel, so the new <see cref="PanelDistance"/>,
         /// <see cref="PanelHorizontalAngle"/>, <see cref="PanelOffset"/> and <see cref="PanelRotation"/> can be persisted.
         /// </summary>
+        /// <remarks>
+        /// Also invoked when the user recentres through the system: the panel goes back straight ahead (see
+        /// <see cref="ResetPanelPlacement"/>), so that a panel left somewhere out of sight can always be brought back.
+        /// </remarks>
         public event Action? PanelLayoutChanged
         {
-            add => panelManipulator.LayoutChanged += value;
-            remove => panelManipulator.LayoutChanged -= value;
+            add
+            {
+                panelManipulator.LayoutChanged += value;
+                panelPlacementReset += value;
+            }
+            remove
+            {
+                panelManipulator.LayoutChanged -= value;
+                panelPlacementReset -= value;
+            }
         }
+
+        private event Action? panelPlacementReset;
+
+        // Set when the user recentred through the system, until the panel's placement has been reset for it.
+        private bool systemRecentered;
 
         private XrEnvironmentMode environment;
 
@@ -531,6 +548,15 @@ namespace osu.Framework.Platform.OpenXR
                     xr.Input.AimPositionOffset = xrInput.PointerOffset;
                 }
 
+                bool resetPlacement = systemRecentered;
+
+                if (resetPlacement)
+                {
+                    systemRecentered = false;
+                    ResetPanelPlacement();
+                    Logger.Log("OpenXR: recentred by the user, panel placement reset.");
+                }
+
                 applyPanelPlacement(xr);
 
                 frameTimer?.Enter(FrameTimer.Phase.Wait);
@@ -559,6 +585,10 @@ namespace osu.Framework.Platform.OpenXR
                 }
 
                 readPanelPlacement(xr);
+
+                // For the new placement to be persisted.
+                if (resetPlacement)
+                    panelPlacementReset?.Invoke();
             }
             catch (Exception e)
             {
@@ -803,6 +833,7 @@ namespace osu.Framework.Platform.OpenXR
                 };
 
                 xr.ExitRequested += () => ExitRequested?.Invoke();
+                xr.SystemRecentered += () => systemRecentered = true;
 
                 if (WaitingForHeadset)
                     Logger.Log("OpenXR: the headset is available now.");

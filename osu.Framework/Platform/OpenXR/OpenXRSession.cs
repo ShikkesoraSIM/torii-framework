@@ -164,6 +164,11 @@ namespace osu.Framework.Platform.OpenXR
         public Vector3 HeadPosition { get; private set; }
 
         /// <summary>
+        /// Whether the head was tracked in the latest <see cref="WaitFrame"/> (its pose keeps the last tracked values otherwise).
+        /// </summary>
+        public bool HeadTracked { get; private set; }
+
+        /// <summary>
         /// The viewer's head orientation in the LOCAL space, sampled in <see cref="WaitFrame"/>.
         /// </summary>
         public Quaternion HeadOrientation { get; private set; } = Quaternion.Identity;
@@ -1082,7 +1087,9 @@ namespace osu.Framework.Platform.OpenXR
 
             const ulong head_valid = XrSpaceLocationFlags.XR_SPACE_LOCATION_POSITION_VALID_BIT | XrSpaceLocationFlags.XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
 
-            if ((head.locationFlags & head_valid) == head_valid)
+            HeadTracked = (head.locationFlags & head_valid) == head_valid;
+
+            if (HeadTracked)
             {
                 HeadPosition = head.pose.position.ToNumerics();
                 HeadOrientation = head.pose.orientation.ToNumerics();

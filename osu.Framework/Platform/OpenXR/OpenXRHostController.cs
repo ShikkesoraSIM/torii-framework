@@ -204,6 +204,43 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public OpenXRInputHandler ControllerInput => xrInput;
 
+        private readonly object trackingLock = new object();
+        private XrTrackingState trackingState;
+
+        /// <summary>
+        /// Where the head, the controllers and the panel were for the latest frame, e.g. to record them. Can be called from any thread.
+        /// </summary>
+        /// <remarks>
+        /// Poses are those predicted for the time the frame is displayed, as used for the pointer and for drawing the controllers.
+        /// </remarks>
+        public XrTrackingState GetTrackingState()
+        {
+            lock (trackingLock)
+                return trackingState;
+        }
+
+        private void publishTrackingState(OpenXRSession xr)
+        {
+            lock (trackingLock)
+            {
+                trackingState.Frame++;
+                trackingState.HeadValid = xr.HeadTracked;
+                trackingState.HeadPosition = xr.HeadPosition;
+                trackingState.HeadOrientation = xr.HeadOrientation;
+                trackingState.LeftHand = xr.Input!.Hands[OpenXRInput.LEFT];
+                trackingState.RightHand = xr.Input.Hands[OpenXRInput.RIGHT];
+                trackingState.ActiveHand = xrInput.ActiveHand;
+                trackingState.AnchorPosition = xr.AnchorPosition;
+                trackingState.AnchorOrientation = xr.AnchorOrientation;
+                trackingState.PanelCentre = xr.Panel.Centre;
+                trackingState.PanelOrientation = xr.Panel.Orientation;
+                trackingState.PanelRadius = xr.Panel.Radius;
+                trackingState.PanelHorizontalAngle = xr.Panel.HorizontalAngle;
+                trackingState.PanelAspect = xr.Panel.Aspect;
+                trackingState.PanelCylinder = xr.Panel.Cylinder;
+            }
+        }
+
         // The panel's placement is set by the game (update thread) and changed by the user grabbing the panel (on the thread running
         // the session): the session's own copy is only touched by the latter, and exchanged with this one once per frame.
         private readonly object panelLock = new object();
@@ -583,6 +620,10 @@ namespace osu.Framework.Platform.OpenXR
                     xr.PointerActiveHand = xrInput.ActiveHand;
                     xr.PointerEdgeTolerance = xrInput.EdgeTolerance;
                 }
+
+                // After grabbing, so the panel is where this frame shows it.
+                if (waited)
+                    publishTrackingState(xr);
 
                 readPanelPlacement(xr);
 

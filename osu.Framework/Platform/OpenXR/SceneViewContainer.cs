@@ -140,12 +140,74 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public Color4 PanelBackground { get; set; } = new Color4(0.01f, 0.01f, 0.015f, 0.9f);
 
+        /// <summary>
+        /// What's shown on a flat wall in the scene (e.g. far behind the panel), or null for nothing but the <see cref="Wall"/>'s content.
+        /// </summary>
+        public Texture? WallTexture { get; set; }
+
+        /// <summary>
+        /// Drawn on the wall, over the <see cref="WallTexture"/>, rather than on the panel. Laid out as if on the panel: it has this
+        /// container's size, and the wall should have its aspect for the content not to be stretched.
+        /// </summary>
+        public Container<Drawable> Wall => wall;
+
+        private readonly WallBuffer wall;
+
+        /// <summary>
+        /// Draws its content to a buffer for the scene to show on the wall, and nothing where it is (on the panel).
+        /// </summary>
+        private partial class WallBuffer : BufferedContainer<Drawable>
+        {
+            public BufferedContainerDrawNodeSharedData Buffers => SharedData;
+
+            protected override DrawNode CreateDrawNode() => new WallDrawNode(this, SharedData);
+
+            private class WallDrawNode : BufferedContainerDrawNode
+            {
+                public WallDrawNode(BufferedContainer<Drawable> source, BufferedContainerDrawNodeSharedData sharedData)
+                    : base(source, sharedData)
+                {
+                }
+
+                protected override void DrawContents(IRenderer renderer)
+                {
+                }
+            }
+        }
+
+        /// <summary>
+        /// The middle of the wall.
+        /// </summary>
+        public Vector3 WallCentre { get; set; }
+
+        /// <summary>
+        /// Which way the wall faces: it's seen from along -Z of this (as the panel is), with +Y up.
+        /// </summary>
+        public Quaternion WallOrientation { get; set; } = Quaternion.Identity;
+
+        /// <summary>
+        /// The wall's width and height, in metres.
+        /// </summary>
+        public Vector2 WallSize { get; set; }
+
+        /// <summary>
+        /// The colour the <see cref="WallTexture"/> is multiplied by (to dim it, say).
+        /// </summary>
+        public Color4 WallColour { get; set; } = Color4.White;
+
         private IShader sceneShader = null!;
         private readonly SceneResources resources = new SceneResources();
 
         public SceneViewContainer()
         {
             RelativeSizeAxes = Axes.Both;
+
+            // Behind the content: its buffer is filled before the scene is drawn.
+            AddInternal(wall = new WallBuffer
+            {
+                RelativeSizeAxes = Axes.Both,
+                Depth = float.MaxValue,
+            });
 
             heldModel = new SceneModel(this, "held");
             headModel = new SceneModel(this, "headset");
@@ -293,6 +355,13 @@ namespace osu.Framework.Platform.OpenXR
             private Color4 sceneBackground;
             private Color4 panelBackground;
 
+            private Texture? wallTexture;
+            private BufferedContainerDrawNodeSharedData? wallContent;
+            private Vector3 wallCentre;
+            private Quaternion wallOrientation;
+            private Vector2 wallSize;
+            private Color4 wallColour;
+
             // For posing a model.
             private Matrix4x4[] nodeWorld = Array.Empty<Matrix4x4>();
             private bool[] nodeVisible = Array.Empty<bool>();
@@ -340,6 +409,13 @@ namespace osu.Framework.Platform.OpenXR
                 accent = Source.Accent;
                 sceneBackground = Source.SceneBackground;
                 panelBackground = Source.PanelBackground;
+
+                wallTexture = Source.WallTexture;
+                wallContent = Source.wall.Count > 0 ? Source.wall.Buffers : null;
+                wallCentre = Source.WallCentre;
+                wallOrientation = Source.WallOrientation;
+                wallSize = Source.WallSize;
+                wallColour = Source.WallColour;
             }
 
             protected override void PopulateContents(IRenderer renderer)
@@ -418,6 +494,7 @@ namespace osu.Framework.Platform.OpenXR
                     }
 
                     batch.Draw();
+                    drawWall(white);
 
                     renderer.PushDepthInfo(new DepthInfo(true, false, BufferTestFunction.LessThan));
 
@@ -704,6 +781,54 @@ namespace osu.Framework.Platform.OpenXR
                     return;
 
                 quad(a - half, a + half, b + half, b - half, ca, ca, cb, cb, whiteCoord, whiteCoord, whiteCoord, whiteCoord);
+            }
+
+            /// <summary>
+            /// The wall: solid, so drawn with the other solid things.
+            /// </summary>
+            /// <param name="white">The texture bound for what follows.</param>
+            private void drawWall(Texture white)
+            {
+                if (wallSize.X <= 0 || wallSize.Y <= 0)
+                    return;
+
+                var x = Vector3.Transform(new Vector3(wallSize.X / 2, 0, 0), wallOrientation);
+                var y = Vector3.Transform(new Vector3(0, wallSize.Y / 2, 0), wallOrientation);
+
+                if (wallTexture?.Available == true)
+                {
+                    wallTexture.Bind();
+                    var rect = wallTexture.GetTextureRect();
+
+                    quad(wallCentre - x + y, wallCentre + x + y, wallCentre + x - y, wallCentre - x - y,
+                        wallColour, wallColour, wallColour, wallColour,
+                        rect.TopLeft, rect.TopRight, rect.BottomRight, rect.BottomLeft);
+
+                    batch.Draw();
+                }
+
+                if (wallContent != null)
+                {
+                    // Over the texture, in the very same place: it passes for depth where the wall itself did (any distance off the
+                    // wall would be lost to the depth buffer's precision that far away, and the two would show through each other).
+                    // Blended onto nothing where it was drawn, its colours are already multiplied by its alpha.
+                    var texture = wallContent.CurrentEffectBuffer.Texture;
+                    var rect = texture.GetTextureRect();
+
+                    renderer.PushDepthInfo(new DepthInfo(true, true, BufferTestFunction.LessThanOrEqual));
+                    renderer.SetBlend(premultiplied);
+                    texture.Bind();
+
+                    quad(wallCentre - x + y, wallCentre + x + y, wallCentre + x - y, wallCentre - x - y,
+                        Color4.White, Color4.White, Color4.White, Color4.White,
+                        rect.TopLeft, rect.TopRight, rect.BottomRight, rect.BottomLeft);
+
+                    batch.Draw();
+                    renderer.SetBlend(BlendingParameters.None);
+                    renderer.PopDepthInfo();
+                }
+
+                white.Bind();
             }
 
             /// <summary>

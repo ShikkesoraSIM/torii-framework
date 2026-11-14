@@ -11,7 +11,8 @@ using static osu.Framework.Platform.OpenXR.Native.XrStructureType;
 namespace osu.Framework.Platform.OpenXR
 {
     /// <summary>
-    /// Laser beams from the controllers to the panel, and a reticle where the inactive controller points.
+    /// Laser beams from the controllers to the panel, and a reticle where the inactive controller points. Ghost hands (see
+    /// <see cref="OpenXRGhostHands"/>) get beams of their own colour.
     /// </summary>
     /// <remarks>
     /// Each beam is a quad composition layer with a static, pre-rendered texture, oriented every frame to run from the controller
@@ -19,7 +20,7 @@ namespace osu.Framework.Platform.OpenXR
     /// </remarks>
     internal sealed unsafe class OpenXRPointerVisuals : IDisposable
     {
-        public const int MAX_LAYERS = 5;
+        public const int MAX_LAYERS = 7;
 
         private const int laser_texture_width = 256;
         private const int laser_texture_height = 32;
@@ -40,6 +41,11 @@ namespace osu.Framework.Platform.OpenXR
         private readonly ulong activeLaser;
         private readonly ulong inactiveLaser;
         private readonly ulong reticle;
+        private readonly ulong activeGhostLaser;
+        private readonly ulong inactiveGhostLaser;
+
+        private static readonly Vector3 laser_colour = new Vector3(0.75f, 0.9f, 1f);
+        private static readonly Vector3 ghost_laser_colour = new Vector3(1f, 0.72f, 0.45f);
 
         private readonly XrCompositionLayerQuad* layers;
 
@@ -49,6 +55,8 @@ namespace osu.Framework.Platform.OpenXR
         private readonly int activeLaserTexture;
         private readonly int inactiveLaserTexture;
         private readonly int reticleTexture;
+        private readonly int activeGhostLaserTexture;
+        private readonly int inactiveGhostLaserTexture;
 
         /// <param name="createTextures">Whether the visuals may be drawn by the caller (see <see cref="TextureFor"/>).</param>
         public OpenXRPointerVisuals(XrFunctions xr, ulong session, ulong space, long format, XrStructureType imageType, bool createTextures = false)
@@ -57,15 +65,19 @@ namespace osu.Framework.Platform.OpenXR
             this.xr = xr;
             this.space = space;
 
-            activeLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(0.9f));
-            inactiveLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(0.35f));
+            activeLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(laser_colour, 0.9f));
+            inactiveLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(laser_colour, 0.35f));
             reticle = createStaticSwapchain(session, format, reticle_texture_size, reticle_texture_size, reticlePixels());
+            activeGhostLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(ghost_laser_colour, 0.8f));
+            inactiveGhostLaser = createStaticSwapchain(session, format, laser_texture_width, laser_texture_height, laserPixels(ghost_laser_colour, 0.3f));
 
             if (createTextures)
             {
-                activeLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(0.9f));
-                inactiveLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(0.35f));
+                activeLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(laser_colour, 0.9f));
+                inactiveLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(laser_colour, 0.35f));
                 reticleTexture = createTexture(reticle_texture_size, reticle_texture_size, reticlePixels());
+                activeGhostLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(ghost_laser_colour, 0.8f));
+                inactiveGhostLaserTexture = createTexture(laser_texture_width, laser_texture_height, laserPixels(ghost_laser_colour, 0.3f));
             }
 
             layers = (XrCompositionLayerQuad*)NativeMemory.AllocZeroed((nuint)(MAX_LAYERS * sizeof(XrCompositionLayerQuad)));
@@ -81,12 +93,28 @@ namespace osu.Framework.Platform.OpenXR
         /// <param name="edgeTolerance">See <see cref="OpenXRInputHandler.EdgeTolerance"/>.</param>
         /// <param name="laserStartOffset">How far along the ray the beams start, in metres.</param>
         /// <param name="output">Receives pointers to the layers. Must have room for <see cref="MAX_LAYERS"/> entries.</param>
+        /// <param name="ghosts">Ghost hands prepared for this frame, to get beams as well; or null.</param>
         /// <returns>The number of layers written.</returns>
         public int BuildLayers(XrHandState[] hands, int activeHand, Vector3 headPosition, OpenXRSession panel, float edgeTolerance, float laserStartOffset,
-                               XrCompositionLayerBaseHeader** output)
+                               XrCompositionLayerBaseHeader** output, OpenXRGhostHands? ghosts = null)
         {
             int count = 0;
 
+            build(hands, activeHand, headPosition, panel, edgeTolerance, laserStartOffset, activeLaser, inactiveLaser, true, output, ref count);
+
+            // Where a ghost points is shown by what it pointed at (e.g. a replay's cursor): beams only.
+            if (ghosts != null)
+            {
+                build(ghosts.Hands, ghosts.ActiveHand, headPosition, panel, edgeTolerance, ghosts.HoldingModel ? 0 : 0.02f, activeGhostLaser, inactiveGhostLaser, false,
+                    output, ref count);
+            }
+
+            return count;
+        }
+
+        private void build(XrHandState[] hands, int activeHand, Vector3 headPosition, OpenXRSession panel, float edgeTolerance, float laserStartOffset,
+                           ulong activeLaser, ulong inactiveLaser, bool reticles, XrCompositionLayerBaseHeader** output, ref int count)
+        {
             for (int hand = 0; hand < hands.Length; hand++)
             {
                 ref readonly var state = ref hands[hand];
@@ -114,7 +142,7 @@ namespace osu.Framework.Platform.OpenXR
                 }
 
                 // The active controller's target is shown by the game's own cursor.
-                if (onPanel && hand != activeHand)
+                if (reticles && onPanel && hand != activeHand)
                 {
                     Quaternion facing = panel.Panel.SurfaceOrientation(hit);
                     layers[count] = quad(reticle, reticle_texture_size, reticle_texture_size,
@@ -123,8 +151,6 @@ namespace osu.Framework.Platform.OpenXR
                     count++;
                 }
             }
-
-            return count;
         }
 
         private XrCompositionLayerQuad quad(ulong swapchain, int textureWidth, int textureHeight, Vector3 position, Quaternion orientation, Vector2 size) => new XrCompositionLayerQuad
@@ -175,7 +201,7 @@ namespace osu.Framework.Platform.OpenXR
         /// A soft beam: bright core across its width, fading in from the controller and fading out at the far end.
         /// Premultiplied alpha.
         /// </summary>
-        private static byte[] laserPixels(float opacity)
+        private static byte[] laserPixels(Vector3 colour, float opacity)
         {
             byte[] pixels = new byte[laser_texture_width * laser_texture_height * 4];
 
@@ -189,7 +215,7 @@ namespace osu.Framework.Platform.OpenXR
                     float along = (x + 0.5f) / laser_texture_width;
                     float fade = MathF.Min(smoothStep(0, 0.15f, along), 1 - smoothStep(0.85f, 1, along) * 0.6f);
 
-                    writePremultiplied(pixels, (y * laser_texture_width + x) * 4, new Vector3(0.75f, 0.9f, 1f), core * fade * opacity);
+                    writePremultiplied(pixels, (y * laser_texture_width + x) * 4, colour, core * fade * opacity);
                 }
             }
 
@@ -240,7 +266,15 @@ namespace osu.Framework.Platform.OpenXR
         /// The GL texture (premultiplied alpha) holding the same image as the swapchain of a layer built by <see cref="BuildLayers"/>.
         /// Only available if textures were requested on construction.
         /// </summary>
-        public int TextureFor(ulong swapchain) => swapchain == activeLaser ? activeLaserTexture : swapchain == inactiveLaser ? inactiveLaserTexture : reticleTexture;
+        public int TextureFor(ulong swapchain)
+        {
+            if (swapchain == activeLaser) return activeLaserTexture;
+            if (swapchain == inactiveLaser) return inactiveLaserTexture;
+            if (swapchain == activeGhostLaser) return activeGhostLaserTexture;
+            if (swapchain == inactiveGhostLaser) return inactiveGhostLaserTexture;
+
+            return reticleTexture;
+        }
 
         private static int createTexture(int width, int height, byte[] pixels)
         {
@@ -316,6 +350,8 @@ namespace osu.Framework.Platform.OpenXR
             xr.xrDestroySwapchain(activeLaser);
             xr.xrDestroySwapchain(inactiveLaser);
             xr.xrDestroySwapchain(reticle);
+            xr.xrDestroySwapchain(activeGhostLaser);
+            xr.xrDestroySwapchain(inactiveGhostLaser);
             NativeMemory.Free(layers);
         }
     }

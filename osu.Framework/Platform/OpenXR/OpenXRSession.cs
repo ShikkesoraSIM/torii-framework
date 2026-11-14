@@ -492,13 +492,37 @@ namespace osu.Framework.Platform.OpenXR
         private bool holdingModel => ShowControllers && HeldModel != null && controllerModels != null && !sceneRenderingFailed;
 
         /// <summary>
+        /// See <see cref="OpenXRHostController.GhostHands"/>.
+        /// </summary>
+        public OpenXRGhostHands? GhostHands { get; set; }
+
+        // Whether there were ghost hands to draw in the frame being rendered.
+        private bool ghostHandsVisible;
+
+        /// <summary>
         /// Renders the controller models (and, where the game draws the whole scene itself, everything behind them) for the current frame. Must be called between <see cref="BeginFrame"/> and <see cref="EndFrame"/>.
         /// </summary>
         public void RenderScene()
         {
             bool surfaces = drawSurfacesInScene;
 
-            if ((!ShowControllers && !surfaces) || sceneRenderingFailed || Input == null || DebugHeadLockedPanel)
+            ghostHandsVisible = false;
+
+            if (sceneRenderingFailed || Input == null || DebugHeadLockedPanel)
+                return;
+
+            try
+            {
+                // (Models it replaces are only on the GPU if there's a renderer.)
+                ghostHandsVisible = GhostHands?.Prepare(m => sceneRenderer?.Release(m)) == true;
+            }
+            catch (Exception e)
+            {
+                Logger.Error(e, "OpenXR: preparing the ghost hands failed.");
+                GhostHands = null;
+            }
+
+            if (!ShowControllers && !surfaces && !ghostHandsVisible)
                 return;
 
             try
@@ -560,7 +584,8 @@ namespace osu.Framework.Platform.OpenXR
                         if (pointerVisuals != null)
                         {
                             var pointerLayers = stackalloc XrCompositionLayerBaseHeader*[OpenXRPointerVisuals.MAX_LAYERS];
-                            int pointerCount = pointerVisuals.BuildLayers(Input.Hands, PointerActiveHand, HeadPosition, this, PointerEdgeTolerance, holdingModel ? 0 : 0.02f, pointerLayers);
+                            int pointerCount = pointerVisuals.BuildLayers(Input.Hands, PointerActiveHand, HeadPosition, this, PointerEdgeTolerance, holdingModel ? 0 : 0.02f, pointerLayers,
+                                ghostHandsVisible ? GhostHands : null);
 
                             for (int i = 0; i < pointerCount; i++)
                             {
@@ -580,7 +605,8 @@ namespace osu.Framework.Platform.OpenXR
 
                 sceneRenderer.Render(localSpace, time, Input.Hands, PointerActiveHand, new System.Numerics.Vector3(0.45f, 0.8f, 1f), controllerModels,
                     sceneSurfaces.AsSpan(0, surfaceCount), ShowControllers,
-                    surfaces && useEnvironmentRenderer && environmentRenderer?.HasRendered == true ? environmentRenderer : null);
+                    surfaces && useEnvironmentRenderer && environmentRenderer?.HasRendered == true ? environmentRenderer : null,
+                    ghostHandsVisible ? GhostHands : null);
             }
             catch (Exception e)
             {
@@ -1237,12 +1263,13 @@ namespace osu.Framework.Platform.OpenXR
                 {
                     // A held model's ray comes out of its tip; a controller's starts a little ahead of it, clear of the model.
                     float laserStart = holdingModel ? 0 : 0.02f;
-                    layerCount += (uint)pointerVisuals.BuildLayers(Input.Hands, PointerActiveHand, HeadPosition, this, PointerEdgeTolerance, laserStart, layerPointers + layerCount);
+                    layerCount += (uint)pointerVisuals.BuildLayers(Input.Hands, PointerActiveHand, HeadPosition, this, PointerEdgeTolerance, laserStart, layerPointers + layerCount,
+                        ghostHandsVisible ? GhostHands : null);
                 }
             }
 
             // Controllers on top of everything: one held in front of the panel must never be hidden by it.
-            if ((ShowControllers || surfacesInScene) && sceneRenderer?.HasRendered == true)
+            if ((ShowControllers || surfacesInScene || ghostHandsVisible) && sceneRenderer?.HasRendered == true)
             {
                 sceneRenderer.FillLayer(&sceneLayer, sceneViews, localSpace);
                 layerPointers[layerCount++] = (XrCompositionLayerBaseHeader*)&sceneLayer;

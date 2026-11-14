@@ -52,6 +52,11 @@ namespace osu.Framework.Platform.OpenXR
         /// <summary>
         /// The colour used for parts whose texture couldn't be decoded (e.g. KTX2): neutral dark plastic.
         /// </summary>
+        /// <summary>
+        /// The accent colour of ghost hands (gamma-encoded RGB), to tell them from the viewer's own.
+        /// </summary>
+        private static readonly Vector3 ghost_accent = new Vector3(1f, 0.55f, 0.2f);
+
         private static readonly Vector4 untextured_colour = new Vector4(0.12f, 0.125f, 0.135f, 1);
 
         private readonly Mesh sphere;
@@ -221,8 +226,10 @@ namespace osu.Framework.Platform.OpenXR
         /// <param name="environment">An environment prepared for this frame to draw behind everything else, or null.</param>
         /// <param name="surfaces">Game images to draw behind the controllers, back to front.</param>
         /// <param name="showControllers">Whether the controllers are drawn (otherwise only the surfaces).</param>
+        /// <param name="ghosts">Ghost hands prepared for this frame to draw as well, or null.</param>
         public void Render(ulong space, long displayTime, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models,
-                           ReadOnlySpan<Surface> surfaces = default, bool showControllers = true, OpenXREnvironmentRenderer? environment = null)
+                           ReadOnlySpan<Surface> surfaces = default, bool showControllers = true, OpenXREnvironmentRenderer? environment = null,
+                           OpenXRGhostHands? ghosts = null)
         {
             HasRendered = false;
 
@@ -254,6 +261,22 @@ namespace osu.Framework.Platform.OpenXR
                 anyVisible = isInView(views[0], position) || isInView(views[1], position);
             }
 
+            for (int hand = 0; ghosts != null && hand < 2 && !anyVisible; hand++)
+            {
+                if (!ghosts.Hands[hand].GripValid)
+                    continue;
+
+                if (!viewsLocated)
+                {
+                    if (!locateViews(space, displayTime))
+                        return;
+
+                    viewsLocated = true;
+                }
+
+                anyVisible = isInView(views[0], ghosts.Hands[hand].GripPosition) || isInView(views[1], ghosts.Hands[hand].GripPosition);
+            }
+
             if (!anyVisible)
                 return;
 
@@ -281,7 +304,7 @@ namespace osu.Framework.Platform.OpenXR
                 releaseGpuModels();
 
                 for (int eye = 0; eye < 2; eye++)
-                    renderEye(eye, hands, activeHand, accent, models, surfaces, showControllers, environment);
+                    renderEye(eye, hands, activeHand, accent, models, surfaces, showControllers, environment, ghosts);
 
                 HasRendered = true;
             }
@@ -327,7 +350,7 @@ namespace osu.Framework.Platform.OpenXR
         }
 
         private void renderEye(int eye, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models, ReadOnlySpan<Surface> surfaces,
-                               bool showControllers, OpenXREnvironmentRenderer? environment)
+                               bool showControllers, OpenXREnvironmentRenderer? environment, OpenXRGhostHands? ghosts)
         {
             var target = eyes[eye];
             int framebuffer = target.Acquire();
@@ -363,6 +386,28 @@ namespace osu.Framework.Platform.OpenXR
                     setMatrix(uViewProjection, viewProjection);
                     GL.Uniform3(uViewPos, eyePosition.X, eyePosition.Y, eyePosition.Z);
                     drawController(hands[hand], hand == activeHand, accent);
+                }
+            }
+
+            for (int hand = 0; ghosts != null && hand < 2; hand++)
+            {
+                if (!ghosts.Hands[hand].GripValid)
+                    continue;
+
+                if (ghosts.Models[hand] is { Visible: true } model)
+                {
+                    GL.UseProgram(texturedProgram);
+                    setMatrix(tViewProjection, viewProjection);
+                    GL.Uniform3(tViewPos, eyePosition.X, eyePosition.Y, eyePosition.Z);
+                    drawModel(model, hand == ghosts.ActiveHand, ghost_accent);
+                }
+                else
+                {
+                    GL.UseProgram(program);
+                    GL.BindVertexArray(vertexArray);
+                    setMatrix(uViewProjection, viewProjection);
+                    GL.Uniform3(uViewPos, eyePosition.X, eyePosition.Y, eyePosition.Z);
+                    drawController(ghosts.Hands[hand], hand == ghosts.ActiveHand, ghost_accent);
                 }
             }
 

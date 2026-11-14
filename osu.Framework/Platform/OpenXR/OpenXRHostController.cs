@@ -482,6 +482,11 @@ namespace osu.Framework.Platform.OpenXR
             }
         }
 
+        /// <summary>
+        /// A second pair of controllers to draw where the game says, e.g. those of the player of a replay being watched.
+        /// </summary>
+        public OpenXRGhostHands GhostHands { get; } = new OpenXRGhostHands();
+
         private float flashReduction = 0.5f;
 
         /// <summary>
@@ -855,6 +860,7 @@ namespace osu.Framework.Platform.OpenXR
                 xr.FlashReduction = flashReduction;
                 xr.ShowControllers = showControllers;
                 xr.HeldModel = heldModel;
+                xr.GhostHands = GhostHands;
 
                 lock (panelLock)
                     panelPlacementSet = true;

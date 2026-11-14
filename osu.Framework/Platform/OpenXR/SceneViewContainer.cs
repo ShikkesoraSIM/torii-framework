@@ -57,7 +57,8 @@ namespace osu.Framework.Platform.OpenXR
 
         /// <summary>
         /// The controllers (<see cref="OpenXRInput.LEFT"/>, <see cref="OpenXRInput.RIGHT"/>). One is drawn if its grip pose is valid:
-        /// as a controller there, or as the <see cref="HeldModel"/> at its aim pose. With a valid aim pose it has a beam.
+        /// as a controller there (one of the <see cref="ControllerModels"/>, or a plain built-in shape), or as the
+        /// <see cref="HeldModel"/> at its aim pose. With a valid aim pose it has a beam.
         /// </summary>
         public XrHandState[] Hands { get; } = new XrHandState[2];
 
@@ -68,6 +69,22 @@ namespace osu.Framework.Platform.OpenXR
 
         private readonly SceneModel heldModel;
         private readonly SceneModel headModel;
+        private readonly SceneModel[] controllerModels;
+        private (XrPlacedModel? left, XrPlacedModel? right) controllerSources;
+
+        /// <summary>
+        /// Models of a controller for the left and right hand, placed at the grip pose; or null for a plain built-in shape.
+        /// </summary>
+        public (XrPlacedModel? left, XrPlacedModel? right) ControllerModels
+        {
+            get => controllerSources;
+            set
+            {
+                controllerSources = value;
+                controllerModels[0].Source = value.left?.Glb;
+                controllerModels[1].Source = value.right?.Glb;
+            }
+        }
 
         /// <summary>
         /// A binary glTF model drawn in place of the controllers, or null. Its origin is placed at the aim pose (-Z along the pointer ray).
@@ -132,6 +149,7 @@ namespace osu.Framework.Platform.OpenXR
 
             heldModel = new SceneModel(this, "held");
             headModel = new SceneModel(this, "headset");
+            controllerModels = new[] { new SceneModel(this, "left controller"), new SceneModel(this, "right controller") };
         }
 
         /// <summary>
@@ -265,6 +283,8 @@ namespace osu.Framework.Platform.OpenXR
             private int activeHand;
             private GltfModel? heldModel;
             private GltfModel? headModel;
+            private readonly GltfModel?[] controllerModels = new GltfModel?[2];
+            private readonly Matrix4x4[] controllerPlacements = new Matrix4x4[2];
             private bool showHead;
             private Vector3 headPosition;
             private Quaternion headOrientation;
@@ -307,6 +327,12 @@ namespace osu.Framework.Platform.OpenXR
                 activeHand = Source.ActiveHand;
                 heldModel = Source.heldModel.Model;
                 headModel = Source.headModel.Model;
+
+                for (int hand = 0; hand < 2; hand++)
+                {
+                    controllerModels[hand] = Source.controllerModels[hand].Model;
+                    controllerPlacements[hand] = (hand == 0 ? Source.controllerSources.left : Source.controllerSources.right)?.Placement ?? Matrix4x4.Identity;
+                }
                 showHead = Source.ShowHead;
                 headPosition = Source.HeadPosition;
                 headOrientation = Source.HeadOrientation;
@@ -480,6 +506,15 @@ namespace osu.Framework.Platform.OpenXR
                                 accent * (hand == activeHand ? 0.5f : 0.12f));
                         }
                     }
+                    else if (prepareModel(controllerModels[hand]) is { } controller)
+                    {
+                        drawModel(controller, controllerPlacements[hand] * Matrix4x4.CreateFromQuaternion(state.GripOrientation) * Matrix4x4.CreateTranslation(state.GripPosition),
+                            accent * (hand == activeHand ? 0.5f : 0.12f));
+
+                        // The next hand may be the built-in shape.
+                        batch.Draw();
+                        renderer.WhitePixel.Bind();
+                    }
                     else
                         drawParts(parts[..SceneShapes.BuildController(state, hand == activeHand, accent, parts)]);
                 }
@@ -517,7 +552,8 @@ namespace osu.Framework.Platform.OpenXR
             {
                 foreach (var model in resources.Models.Keys.ToArray())
                 {
-                    if (!ReferenceEquals(model, heldModel) && !ReferenceEquals(model, headModel))
+                    if (!ReferenceEquals(model, heldModel) && !ReferenceEquals(model, headModel) && !ReferenceEquals(model, controllerModels[0])
+                        && !ReferenceEquals(model, controllerModels[1]))
                         resources.Release(model);
                 }
             }

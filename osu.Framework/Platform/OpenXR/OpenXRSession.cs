@@ -492,6 +492,11 @@ namespace osu.Framework.Platform.OpenXR
         private bool holdingModel => ShowControllers && HeldModel != null && controllerModels != null && !sceneRenderingFailed;
 
         /// <summary>
+        /// See <see cref="OpenXRHostController.GenericControllerModels"/>.
+        /// </summary>
+        public (XrPlacedModel? left, XrPlacedModel? right) GenericControllerModels { get; set; }
+
+        /// <summary>
         /// See <see cref="OpenXRHostController.GhostHands"/>.
         /// </summary>
         public OpenXRGhostHands? GhostHands { get; set; }
@@ -540,6 +545,7 @@ namespace osu.Framework.Platform.OpenXR
                 if (controllerModels != null)
                 {
                     controllerModels.HeldModel = HeldModel;
+                    controllerModels.SetGenericModels(GenericControllerModels.left, GenericControllerModels.right);
                     controllerModels.Update(localSpace, time, Input.Hands);
                 }
 

@@ -25,6 +25,7 @@ namespace osu.Framework.Platform.OpenXR
     /// <item>XR_FB_render_model (Meta): the runtime provides the model, placed at the grip pose. Parts are animated if the model follows
     /// the WebXR input profile naming convention (<c>&lt;part&gt;_value</c> nodes moving between <c>_min</c> and <c>_max</c>).</item>
     /// <item>For development, <c>controller-left.glb</c> / <c>controller-right.glb</c> in the debug directory, handled like (2).</item>
+    /// <item><see cref="GenericModels"/>: models of some controller, given by the game for when there's nothing better.</item>
     /// </list>
     /// A <see cref="HeldModel"/> (e.g. a pen) replaces all of these, in both hands, placed at the pointer's aim pose.
     /// Hands without a model are drawn with <see cref="OpenXRSceneRenderer"/>'s built-in stylised model.
@@ -50,6 +51,16 @@ namespace osu.Framework.Platform.OpenXR
             /// Only applies without a <see cref="Space"/>.
             /// </summary>
             public bool AtAim { get; init; }
+
+            /// <summary>
+            /// Takes the model's own coordinates to the pose it's placed at. Only applies without a <see cref="Space"/>.
+            /// </summary>
+            public Matrix4x4 Placement { get; set; } = Matrix4x4.Identity;
+
+            /// <summary>
+            /// Whether this is one of the <see cref="GenericModels"/>: it gives way to a model of the actual controller when one arrives.
+            /// </summary>
+            public bool Generic { get; set; }
 
             /// <summary>
             /// The render model handle (XR_EXT_render_model), for its animated node states. 0 otherwise.
@@ -124,6 +135,37 @@ namespace osu.Framework.Platform.OpenXR
         private readonly bool useExt;
         private bool useFb;
         private readonly string? debugDirectory;
+
+        private const string generic_source = "generic model";
+
+        private readonly XrPlacedModel?[] genericModels = new XrPlacedModel?[2];
+
+        /// <summary>
+        /// Models of a controller for each hand (<see cref="OpenXRInput.LEFT"/>, <see cref="OpenXRInput.RIGHT"/>), placed at the grip
+        /// pose where the runtime has no model of the actual controller; or null. See <see cref="OpenXRHostController.GenericControllerModels"/>.
+        /// </summary>
+        public void SetGenericModels(XrPlacedModel? left, XrPlacedModel? right)
+        {
+            if (ReferenceEquals(genericModels[0], left) && ReferenceEquals(genericModels[1], right))
+                return;
+
+            genericModels[0] = left;
+            genericModels[1] = right;
+
+            // Those in use are replaced (or dropped) by the next load.
+            for (int hand = 0; hand < 2; hand++)
+            {
+                if (Hands[hand] is not { Generic: true } existing)
+                    continue;
+
+                Hands[hand] = null;
+                ModelRemoved?.Invoke(existing);
+            }
+
+            needsLoad = true;
+            attempts = 0;
+            lastAttempt = DateTime.MinValue;
+        }
 
         private byte[]? heldModel;
 
@@ -252,7 +294,7 @@ namespace osu.Framework.Platform.OpenXR
             else
             {
                 model.Visible = hand.GripValid;
-                model.Root = Matrix4x4.CreateFromQuaternion(hand.GripOrientation) * Matrix4x4.CreateTranslation(hand.GripPosition);
+                model.Root = model.Placement * Matrix4x4.CreateFromQuaternion(hand.GripOrientation) * Matrix4x4.CreateTranslation(hand.GripPosition);
                 applyWebXrAnimations(model, hand);
             }
 
@@ -339,6 +381,13 @@ namespace osu.Framework.Platform.OpenXR
                         fetchFb(sources);
 
                     fetchDebugFiles(sources);
+
+                    // Last, and only once: the runtime is asked again for a while after, in case it has a model later.
+                    for (int hand = 0; hand < 2; hand++)
+                    {
+                        if (genericModels[hand] is { } generic && Hands[hand] == null)
+                            sources.Add((hand, generic.Glb, generic_source, 0, 0, Array.Empty<string>()));
+                    }
                 }
             }
             catch (Exception e)
@@ -350,6 +399,7 @@ namespace osu.Framework.Platform.OpenXR
                 return;
 
             bool held = heldModel != null;
+            var genericPlacements = new[] { genericModels[0]?.Placement ?? Matrix4x4.Identity, genericModels[1]?.Placement ?? Matrix4x4.Identity };
 
             pending = Task.Run(() =>
             {
@@ -360,7 +410,15 @@ namespace osu.Framework.Platform.OpenXR
                     try
                     {
                         var gltf = GltfModel.FromGlb(s.glb);
-                        results.Add((s.hand, createHandModel(gltf, s.source, s.space, s.renderModel, s.nodeNames, held)));
+                        var model = createHandModel(gltf, s.source, s.space, s.renderModel, s.nodeNames, held);
+
+                        if (s.source == generic_source)
+                        {
+                            model.Generic = true;
+                            model.Placement = genericPlacements[s.hand];
+                        }
+
+                        results.Add((s.hand, model));
                     }
                     catch (Exception e)
                     {
@@ -390,7 +448,12 @@ namespace osu.Framework.Platform.OpenXR
             // replaces existing models; a retry only fills in hands that are still missing.
             foreach (var (hand, model) in task.GetResultSafely())
             {
-                if (installed[hand] || (Hands[hand] != null && !pendingReplaces))
+                // (A generic model is replaced by a retry too, by a model of the actual controller.)
+                if (installed[hand] || (Hands[hand] is { } current && !pendingReplaces && !(current.Generic && !model.Generic)))
+                    continue;
+
+                // Nothing better than what there is.
+                if (model.Generic && Hands[hand] != null)
                     continue;
 
                 if (Hands[hand] is { } existing)
@@ -403,7 +466,7 @@ namespace osu.Framework.Platform.OpenXR
                            + (model.AnimatableNodes.Length > 0 ? $", {model.AnimatableNodes.Length} animatable nodes" : string.Empty));
             }
 
-            needsLoad = Hands[0] == null || Hands[1] == null;
+            needsLoad = Hands[0] is null or { Generic: true } || Hands[1] is null or { Generic: true };
         }
 
         private static HandModel createHandModel(GltfModel gltf, string source, ulong space, ulong renderModel, string[] nodeNames, bool atAim)

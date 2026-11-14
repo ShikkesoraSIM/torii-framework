@@ -482,6 +482,24 @@ namespace osu.Framework.Platform.OpenXR
             }
         }
 
+        private (XrPlacedModel? left, XrPlacedModel? right) genericControllerModels;
+
+        /// <summary>
+        /// Models of a controller for the left and right hand, drawn where a controller is and nothing better is known of it: for the
+        /// user's own controllers when the runtime has no model of them, and for <see cref="GhostHands"/>. Without them a plain
+        /// built-in shape is drawn.
+        /// </summary>
+        public (XrPlacedModel? left, XrPlacedModel? right) GenericControllerModels
+        {
+            get => genericControllerModels;
+            set
+            {
+                genericControllerModels = value;
+                GhostHands.ControllerModels = value;
+                if (xr != null) xr.GenericControllerModels = value;
+            }
+        }
+
         /// <summary>
         /// A second pair of controllers to draw where the game says, e.g. those of the player of a replay being watched.
         /// </summary>
@@ -861,6 +879,7 @@ namespace osu.Framework.Platform.OpenXR
                 xr.ShowControllers = showControllers;
                 xr.HeldModel = heldModel;
                 xr.GhostHands = GhostHands;
+                xr.GenericControllerModels = genericControllerModels;
 
                 lock (panelLock)
                     panelPlacementSet = true;

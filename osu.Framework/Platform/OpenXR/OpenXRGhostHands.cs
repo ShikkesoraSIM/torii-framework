@@ -30,8 +30,9 @@ namespace osu.Framework.Platform.OpenXR
         /// Shows the hands at the given poses (in the session's LOCAL space), until <see cref="Hide"/> or the next call.
         /// </summary>
         /// <remarks>
-        /// A hand is drawn if its grip pose is valid: as a controller there, with trigger and squeeze as given; or, with a
-        /// <see cref="HeldModel"/>, as that model at its aim pose (which must be valid too).
+        /// A hand is drawn if its grip pose is valid: as a controller there (one of the <see cref="ControllerModels"/>, or a plain
+        /// built-in shape with trigger and squeeze as given); or, with a <see cref="HeldModel"/>, as that model at its aim pose (which
+        /// must be valid too).
         /// </remarks>
         /// <param name="left">The left hand.</param>
         /// <param name="right">The right hand.</param>
@@ -69,6 +70,23 @@ namespace osu.Framework.Platform.OpenXR
             }
         }
 
+        private (XrPlacedModel? left, XrPlacedModel? right) controllerModels;
+
+        /// <summary>
+        /// Models of a controller for the left and right hand, placed at the grip pose; or null for the plain built-in shape.
+        /// </summary>
+        public (XrPlacedModel? left, XrPlacedModel? right) ControllerModels
+        {
+            get
+            {
+                lock (stateLock) return controllerModels;
+            }
+            set
+            {
+                lock (stateLock) controllerModels = value;
+            }
+        }
+
         #region Render thread
 
         /// <summary>
@@ -77,7 +95,7 @@ namespace osu.Framework.Platform.OpenXR
         internal readonly XrHandState[] Hands = new XrHandState[2];
 
         /// <summary>
-        /// The held model per hand, posed for the frame being drawn; null where the built-in controller is drawn.
+        /// The model per hand, posed for the frame being drawn; null where the built-in controller is drawn.
         /// </summary>
         internal readonly OpenXRControllerModels.HandModel?[] Models = new OpenXRControllerModels.HandModel?[2];
 
@@ -86,11 +104,12 @@ namespace osu.Framework.Platform.OpenXR
         /// <summary>
         /// Whether the hands are drawn holding the <see cref="HeldModel"/> this frame (its pointer ray comes out of its tip).
         /// </summary>
-        internal bool HoldingModel => Models[0] != null;
+        internal bool HoldingModel => Models[0] is { AtAim: true };
 
-        private byte[]? loadedSource;
-        private Task<GltfModel>? pending;
-        private byte[]? pendingSource;
+        // What each hand's model is of, and the reading of one still under way.
+        private readonly byte[]?[] loadedSource = new byte[]?[2];
+        private readonly Task<GltfModel>?[] pending = new Task<GltfModel>?[2];
+        private readonly byte[]?[] pendingSource = new byte[]?[2];
 
         /// <summary>
         /// Takes what was last set as the hands of the frame about to be drawn.
@@ -99,7 +118,8 @@ namespace osu.Framework.Platform.OpenXR
         /// <returns>Whether there is anything to draw.</returns>
         internal bool Prepare(Action<GltfModel> release)
         {
-            byte[]? source;
+            byte[]? held;
+            (XrPlacedModel? left, XrPlacedModel? right) controllers;
             bool visible;
 
             lock (stateLock)
@@ -107,7 +127,8 @@ namespace osu.Framework.Platform.OpenXR
                 Hands[0] = left;
                 Hands[1] = right;
                 ActiveHand = activeHand;
-                source = heldModel;
+                held = heldModel;
+                controllers = controllerModels;
                 visible = shown;
             }
 
@@ -117,20 +138,25 @@ namespace osu.Framework.Platform.OpenXR
                 return false;
             }
 
-            updateModel(source, release);
-
             for (int hand = 0; hand < 2; hand++)
             {
+                var controller = hand == 0 ? controllers.left : controllers.right;
+
+                updateModel(hand, held ?? controller?.Glb, held != null, held == null && controller != null ? controller.Placement : Matrix4x4.Identity, release);
+
                 if (Models[hand] is not { } model)
                     continue;
 
                 ref var state = ref Hands[hand];
 
-                model.Visible = state.GripValid && state.AimValid;
+                model.Visible = state.GripValid && (!model.AtAim || state.AimValid);
 
                 if (model.Visible)
                 {
-                    model.Root = Matrix4x4.CreateFromQuaternion(state.AimOrientation) * Matrix4x4.CreateTranslation(state.AimPosition);
+                    model.Root = model.AtAim
+                        ? Matrix4x4.CreateFromQuaternion(state.AimOrientation) * Matrix4x4.CreateTranslation(state.AimPosition)
+                        : model.Placement * Matrix4x4.CreateFromQuaternion(state.GripOrientation) * Matrix4x4.CreateTranslation(state.GripPosition);
+
                     model.Model.ComputeTransforms(model.NodeWorld, model.NodeVisible);
                 }
 
@@ -145,44 +171,43 @@ namespace osu.Framework.Platform.OpenXR
             return Hands[0].GripValid || Hands[1].GripValid;
         }
 
-        private void updateModel(byte[]? source, Action<GltfModel> release)
+        private void updateModel(int hand, byte[]? source, bool atAim, Matrix4x4 placement, Action<GltfModel> release)
         {
-            if (pending is { IsCompleted: true } task)
+            if (pending[hand] is { IsCompleted: true } task)
             {
-                pending = null;
+                pending[hand] = null;
 
-                if (task.IsCompletedSuccessfully && ReferenceEquals(pendingSource, source))
-                {
-                    var gltf = task.GetResultSafely();
-                    Models[0] = new OpenXRControllerModels.HandModel(gltf, "ghost held model") { AtAim = true };
-                    Models[1] = new OpenXRControllerModels.HandModel(gltf, "ghost held model") { AtAim = true };
-                }
+                if (task.IsCompletedSuccessfully && ReferenceEquals(pendingSource[hand], source))
+                    Models[hand] = new OpenXRControllerModels.HandModel(task.GetResultSafely(), "ghost model") { AtAim = atAim, Placement = placement };
                 else if (task.IsFaulted)
-                    Logger.Log($"OpenXR: couldn't read the ghost hands' held model: {task.Exception?.InnerException?.Message}");
+                    Logger.Log($"OpenXR: couldn't read a ghost hand's model: {task.Exception?.InnerException?.Message}");
 
                 // A model which can't be read isn't tried again.
-                loadedSource = pendingSource;
-                pendingSource = null;
+                loadedSource[hand] = pendingSource[hand];
+                pendingSource[hand] = null;
             }
 
-            if (ReferenceEquals(source, loadedSource) || pending != null)
+            if (ReferenceEquals(source, loadedSource[hand]) || pending[hand] != null)
                 return;
 
-            if (Models[0] is { } old)
+            if (Models[hand] is { } old)
             {
-                Models[0] = Models[1] = null;
-                release(old.Model);
+                Models[hand] = null;
+
+                // (Both hands hold the same held model.)
+                if (!ReferenceEquals(Models[1 - hand]?.Model, old.Model))
+                    release(old.Model);
             }
 
             if (source == null)
             {
-                loadedSource = null;
+                loadedSource[hand] = null;
                 return;
             }
 
-            // Parsed in the background; the built-in controllers are drawn until it's ready.
-            pendingSource = source;
-            pending = Task.Run(() => GltfModel.FromGlb(source));
+            // Read in the background, once for both hands if it's the same; the built-in controllers are drawn until it's ready.
+            pendingSource[hand] = source;
+            pending[hand] = ReferenceEquals(pendingSource[1 - hand], source) && pending[1 - hand] is { } other ? other : Task.Run(() => GltfModel.FromGlb(source));
         }
 
         #endregion

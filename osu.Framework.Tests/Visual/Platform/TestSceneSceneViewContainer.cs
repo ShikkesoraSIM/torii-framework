@@ -82,6 +82,8 @@ namespace osu.Framework.Tests.Visual.Platform
                 return;
             }
 
+            AddStep("hold model controllers", () => scene!.ControllerModels = (loadController("left"), loadController("right")));
+            AddWaitStep("look at them", 20);
             AddStep("hold pens", () => scene!.HeldModel = loadModel("pen"));
             AddStep("wear a headset", () => scene!.HeadModel = loadModel("headset"));
             AddWaitStep("look at them", 20);
@@ -91,6 +93,10 @@ namespace osu.Framework.Tests.Visual.Platform
             AddStep("hold pens", () => scene!.HeldModel = loadModel("pen"));
             AddStep("wear a headset", () => scene!.HeadModel = loadModel("headset"));
         }
+
+        // As the game places them (VRModels).
+        private static XrPlacedModel? loadController(string hand)
+            => loadModel($"meta_quest_pro_{hand}_controller") is byte[] glb ? new XrPlacedModel(glb, new Vector3(0, 0, -0.02f), new Quaternion(0, 0.9135f, -0.4067f, 0)) : null;
 
         private static byte[]? loadModel(string name)
         {

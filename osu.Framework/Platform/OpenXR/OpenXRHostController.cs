@@ -63,6 +63,19 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public IBindable<bool> IsDisplayed => isDisplayed;
 
+        private readonly BindableBool supportsPassthrough = new BindableBool(true);
+
+        /// <summary>
+        /// Whether the runtime can show the room (<see cref="XrEnvironmentMode.Passthrough"/>). Assumed until the session has started;
+        /// changes on the draw thread.
+        /// </summary>
+        public IBindable<bool> SupportsPassthrough => supportsPassthrough;
+
+        /// <summary>
+        /// The name the runtime reports (e.g. "SteamVR/OpenXR"). Empty until the session has started.
+        /// </summary>
+        public string RuntimeName { get; private set; } = string.Empty;
+
         /// <summary>
         /// Invoked when the runtime asks the app to exit (e.g. quit from the system menu).
         /// </summary>
@@ -452,6 +465,8 @@ namespace osu.Framework.Platform.OpenXR
                     DebugDirectory = debugDirectory,
                 };
                 xr.CreateSession();
+                RuntimeName = xr.RuntimeName;
+                supportsPassthrough.Value = xr.EnabledExtensions.Contains("XR_FB_passthrough");
 
                 if (debugFlag("debug-frame-timing"))
                     frameTimer = new FrameTimer();

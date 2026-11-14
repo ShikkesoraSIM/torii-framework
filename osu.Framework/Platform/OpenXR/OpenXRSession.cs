@@ -252,6 +252,11 @@ namespace osu.Framework.Platform.OpenXR
         public IReadOnlySet<string> EnabledExtensions => enabledExtensions;
 
         /// <summary>
+        /// The name the runtime reports (e.g. "SteamVR/OpenXR").
+        /// </summary>
+        public string RuntimeName { get; private set; } = string.Empty;
+
+        /// <summary>
         /// Invoked when the session state changes. The new state is passed.
         /// </summary>
         /// <remarks>
@@ -666,7 +671,8 @@ namespace osu.Framework.Platform.OpenXR
             xr.xrGetInstanceProperties(instance, &properties).ThrowIfFailed(nameof(xr.xrGetInstanceProperties));
 
             ulong v = properties.runtimeVersion;
-            Logger.Log($"OpenXR: instance created on runtime \"{XrUtil.ReadString(properties.runtimeName)}\" {v >> 48}.{(v >> 32) & 0xFFFF}.{v & 0xFFFFFFFF}; "
+            RuntimeName = XrUtil.ReadString(properties.runtimeName);
+            Logger.Log($"OpenXR: instance created on runtime \"{RuntimeName}\" {v >> 48}.{(v >> 32) & 0xFFFF}.{v & 0xFFFFFFFF}; "
                        + $"enabled extensions: {string.Join(' ', enabledExtensions)}");
         }
 

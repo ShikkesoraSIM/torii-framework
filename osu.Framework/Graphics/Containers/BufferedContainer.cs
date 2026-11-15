@@ -324,7 +324,28 @@ namespace osu.Framework.Graphics.Containers
         }
 
         private long childrenUpdateVersion = -1;
-        protected override bool RequiresChildrenUpdate => base.RequiresChildrenUpdate && (TrackSubtreeChanges || childrenUpdateVersion != updateVersion);
+        protected override bool RequiresChildrenUpdate => base.RequiresChildrenUpdate && !Frozen && (TrackSubtreeChanges || childrenUpdateVersion != updateVersion);
+
+        /// <summary>
+        /// Torii: with a cached frame buffer, stop updating the children and generating their draw nodes: only the cached buffer is drawn,
+        /// wherever this container is. Children stay as they were (transforms, schedulers and their own updates don't run), so whoever
+        /// sets this has to know nothing in here needs to change, and unset it when something does (on hover, for example).
+        /// </summary>
+        /// <remarks>
+        /// <see cref="TrackSubtreeChanges"/> only saves the drawing; this also saves updating, laying out and generating draw nodes for
+        /// everything inside, which is most of the cost of a list of cached items while it scrolls.
+        /// If the buffer has to be drawn again while frozen (first draw, resized, or released by
+        /// <see cref="ReleaseFrameBufferWhenNotDrawn"/>), the children's draw nodes are generated for that.
+        /// </remarks>
+        public bool Frozen { get; set; }
+
+        /// <summary>
+        /// Torii: the time of the last change that had the buffer drawn again, in this container's clock.
+        /// With <see cref="TrackSubtreeChanges"/>, tells how long the contents have been unchanged.
+        /// </summary>
+        public double LastRedrawTime { get; private set; }
+
+        private long lastRedrawVersion = -1;
 
         /// <summary>
         /// Torii: with a cached frame buffer, keep children updating and redraw the buffer whenever anything drawn inside it changes,
@@ -335,9 +356,23 @@ namespace osu.Framework.Graphics.Containers
         /// only come from its immediate children. That suits static content, but deeper changes (hover effects, items loading in,
         /// scrolling) are missed and anything driven by updates stalls. With this set, changes are detected while generating the
         /// children's draw nodes (a drawable whose draw state changed has its draw node re-applied, and drawables appearing or
-        /// disappearing change the number of draw nodes), so caching only saves the drawing.
+        /// disappearing change the number of draw nodes), so caching only saves the drawing. Changes coming from outside (this container
+        /// moving, scaling or fading) don't count: the buffer is drawn somewhere else, or redrawn at the new size.
         /// </remarks>
         public bool TrackSubtreeChanges { get; init; }
+
+        /// <summary>
+        /// Torii: with a cached frame buffer, free it once this container hasn't been drawn for a few seconds (for example, scrolled out of
+        /// view), and draw it again when it's next drawn.
+        /// </summary>
+        /// <remarks>
+        /// Meant for many cached items in a long list, each of which would otherwise hold on to its frame buffer for as long as it exists.
+        /// </remarks>
+        public bool ReleaseFrameBufferWhenNotDrawn
+        {
+            get => sharedData.ReleaseWhenNotDrawn;
+            init => sharedData.ReleaseWhenNotDrawn = value;
+        }
 
         private int lastSubtreeDrawNodeCount = -1;
 
@@ -346,15 +381,39 @@ namespace osu.Framework.Graphics.Containers
             if (!TrackSubtreeChanges || !UsingCachedFrameBuffer)
                 return base.GenerateDrawNodeSubtree(frame, treeIndex, forceNewDrawNode);
 
-            int appliedBefore = DrawNodeApplications;
+            // Frozen and the buffer holds the current contents (as far as this thread can tell: the draw thread is the one drawing and
+            // releasing it): no need for the children's draw nodes.
+            if (Frozen && !forceNewDrawNode && sharedData.DrawVersion == updateVersion && GenerateOwnDrawNode(frame, treeIndex) is BufferedContainerDrawNode frozenNode)
+            {
+                frozenNode.ChildrenOutdated = true;
+                return frozenNode;
+            }
+
+            // Changes to this container itself (being moved, say) don't change what's in the buffer: those that do invalidate its draw node.
+            int changesBefore = DrawNodeContentChanges + (ContentChangedSinceLastDrawNode ? 1 : 0);
             int generatedBefore = DrawNodesGenerated;
 
             DrawNode node = base.GenerateDrawNodeSubtree(frame, treeIndex, forceNewDrawNode);
 
             int generated = DrawNodesGenerated - generatedBefore;
 
-            if (node is BufferedContainerDrawNode bufferedNode && (DrawNodeApplications != appliedBefore || generated != lastSubtreeDrawNodeCount))
-                bufferedNode.ForceRedraw(++updateVersion);
+            if (node is BufferedContainerDrawNode bufferedNode)
+            {
+                bufferedNode.ChildrenOutdated = false;
+
+                if (DrawNodeContentChanges != changesBefore || generated != lastSubtreeDrawNodeCount)
+                    ++updateVersion;
+
+                // Always, as a node only takes the version by itself when its own state is applied: every node with up-to-date children
+                // then draws the buffer if it's behind (or was released), and leaves it at the current version.
+                bufferedNode.ForceRedraw(updateVersion);
+            }
+
+            if (updateVersion != lastRedrawVersion)
+            {
+                lastRedrawVersion = updateVersion;
+                LastRedrawTime = Time.Current;
+            }
 
             lastSubtreeDrawNodeCount = generated;
             return node;

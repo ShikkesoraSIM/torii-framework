@@ -274,6 +274,7 @@ namespace osu.Framework.Graphics.Rendering
             Clear(new ClearInfo(BackbufferClearColour));
 
             freeUnusedVertexBuffers();
+            releaseUndrawnFrameBuffers();
             vboInUse.Value = vertexBuffersInUse.Count;
 
             statTextureUploadsQueued.Value = textureUploadQueue.Count;
@@ -780,6 +781,24 @@ namespace osu.Framework.Graphics.Rendering
                 flush_source_statistics[(int)source].Value++;
         }
 
+        /// <summary>
+        /// Torii: buffered draw nodes whose frame buffers are released when left undrawn.
+        /// </summary>
+        private readonly List<BufferedDrawNodeSharedData> releasableFrameBuffers = new List<BufferedDrawNodeSharedData>();
+
+        private void releaseUndrawnFrameBuffers()
+        {
+            releasableFrameBuffers.RemoveAll(sharedData =>
+            {
+                if (FrameIndex - sharedData.LastDrawnFrame <= RESOURCE_FREE_NO_USAGE_LENGTH)
+                    return false;
+
+                sharedData.ReleaseFrameBuffers();
+                sharedData.ReleaseTracked = false;
+                return true;
+            });
+        }
+
         private void freeUnusedVertexBuffers()
         {
             foreach (var buf in vertexBuffersInUse)
@@ -1224,6 +1243,17 @@ namespace osu.Framework.Graphics.Rendering
         void IRenderer.BeginFrame(Vector2 windowSize) => BeginFrame(windowSize);
         void IRenderer.FinishFrame() => FinishFrame();
         void IRenderer.FlushCurrentBatch(FlushBatchSource? source) => FlushCurrentBatch(source);
+
+        void IRenderer.MarkFrameBuffersDrawn(BufferedDrawNodeSharedData sharedData)
+        {
+            sharedData.LastDrawnFrame = FrameIndex;
+
+            if (sharedData.ReleaseTracked)
+                return;
+
+            sharedData.ReleaseTracked = true;
+            releasableFrameBuffers.Add(sharedData);
+        }
         void IRenderer.SwapBuffers() => SwapBuffers();
         void IRenderer.WaitUntilIdle() => WaitUntilIdle();
         void IRenderer.WaitUntilNextFrameReady() => WaitUntilNextFrameReady();

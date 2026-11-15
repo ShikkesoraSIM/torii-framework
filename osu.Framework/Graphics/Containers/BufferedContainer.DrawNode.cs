@@ -74,6 +74,14 @@ namespace osu.Framework.Graphics.Containers
             /// </summary>
             internal void ForceRedraw(long version) => updateVersion = version;
 
+            /// <summary>
+            /// Whether this node was generated without its children (see <see cref="BufferedContainer{T}.Frozen"/>), which then can't be
+            /// drawn into the buffer.
+            /// </summary>
+            internal bool ChildrenOutdated;
+
+            protected override bool CanRedraw => !ChildrenOutdated;
+
             protected override void PopulateContents(IRenderer renderer)
             {
                 base.PopulateContents(renderer);

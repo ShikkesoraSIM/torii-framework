@@ -121,6 +121,46 @@ namespace osu.Framework.Graphics
         /// </summary>
         internal void ResetCurrentEffectBuffer() => currentEffectBuffer = -1;
 
+        /// <summary>
+        /// Torii: whether the frame buffers are released when not drawn for a while. Set once, before the first draw.
+        /// </summary>
+        internal bool ReleaseWhenNotDrawn;
+
+        /// <summary>
+        /// Torii: whether <see cref="IRenderer"/> is tracking when these buffers were last drawn, to release them once unused
+        /// (see <see cref="Containers.BufferedContainer{T}.ReleaseFrameBufferWhenNotDrawn"/>). Only accessed on the draw thread.
+        /// </summary>
+        internal bool ReleaseTracked;
+
+        /// <summary>
+        /// Torii: the <see cref="IRenderer.FrameIndex"/> these buffers were last drawn in. Only accessed on the draw thread.
+        /// </summary>
+        internal ulong LastDrawnFrame;
+
+        private bool isDisposed;
+
+        /// <summary>
+        /// Torii: frees the frame buffers, which are created again (and redrawn) the next time they're drawn.
+        /// Must be called on the draw thread, once no queued GPU frame can still use them.
+        /// </summary>
+        internal void ReleaseFrameBuffers()
+        {
+            if (isDisposed)
+                return;
+
+            mainBuffer?.Dispose();
+            mainBuffer = null;
+
+            for (int i = 0; i < effectBuffers.Length; i++)
+            {
+                effectBuffers[i]?.Dispose();
+                effectBuffers[i] = null;
+            }
+
+            currentEffectBuffer = -1;
+            DrawVersion = -1;
+        }
+
         public void Dispose()
         {
             renderer?.ScheduleDisposal(static d => d.Dispose(true), this);
@@ -131,7 +171,10 @@ namespace osu.Framework.Graphics
         {
             Debug.Assert(IsInitialised);
 
-            MainBuffer?.Dispose();
+            isDisposed = true;
+
+            // Torii: the field, not MainBuffer, which would create a buffer just to dispose it (e.g. after ReleaseFrameBuffers()).
+            mainBuffer?.Dispose();
             for (int i = 0; i < effectBuffers.Length; i++)
                 effectBuffers[i]?.Dispose();
         }

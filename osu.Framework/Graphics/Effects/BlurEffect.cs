@@ -54,8 +54,14 @@ namespace osu.Framework.Graphics.Effects
         /// </summary>
         public bool PadExtent;
 
+        /// <summary>
+        /// Torii: whether the blurred result is cached, and only recomputed when the drawable (or its size) changes. Default is false,
+        /// which blurs again every frame.
+        /// </summary>
+        public bool CacheDrawnEffect;
+
         public BufferedContainer ApplyTo(Drawable drawable) =>
-            new BufferedContainer
+            new BufferedContainer(cachedFrameBuffer: CacheDrawnEffect)
             {
                 BlurSigma = Sigma,
                 BlurRotation = Rotation,

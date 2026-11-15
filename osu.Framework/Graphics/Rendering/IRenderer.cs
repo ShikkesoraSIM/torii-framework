@@ -222,6 +222,12 @@ namespace osu.Framework.Graphics.Rendering
         internal void FlushCurrentBatch(FlushBatchSource? source);
 
         /// <summary>
+        /// Torii: notes that a buffered draw node's frame buffers were drawn this frame, so they are released once left undrawn
+        /// for a while (see <see cref="Containers.BufferedContainer{T}.ReleaseFrameBufferWhenNotDrawn"/>).
+        /// </summary>
+        internal void MarkFrameBuffersDrawn(BufferedDrawNodeSharedData sharedData);
+
+        /// <summary>
         /// Binds a texture.
         /// </summary>
         /// <param name="texture">The texture to bind.</param>

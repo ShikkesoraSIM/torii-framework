@@ -1185,7 +1185,20 @@ namespace osu.Framework.Graphics.Containers
                     }
                 }
 
+                // A proxied drawable is drawn where its proxy is, so its changes don't count towards this subtree (see DrawNodeContentChanges).
+                int appliedBefore = DrawNodeContentChanges;
+                int generatedBefore = DrawNodesGenerated;
+
                 DrawNode next = drawable.GenerateDrawNodeSubtree(frame, treeIndex, forceNewDrawNode);
+
+                if (drawable.HasProxy)
+                {
+                    DrawNodeContentChanges = appliedBefore;
+                    DrawNodesGenerated = generatedBefore;
+                }
+                else if (next != null)
+                    DrawNodesGenerated++;
+
                 if (next == null)
                     continue;
 
@@ -1201,6 +1214,11 @@ namespace osu.Framework.Graphics.Containers
                 }
             }
         }
+
+        /// <summary>
+        /// Torii: generates this composite's own draw node, leaving its children's as they were last generated.
+        /// </summary>
+        internal DrawNode GenerateOwnDrawNode(ulong frame, int treeIndex) => base.GenerateDrawNodeSubtree(frame, treeIndex, false);
 
         internal override DrawNode GenerateDrawNodeSubtree(ulong frame, int treeIndex, bool forceNewDrawNode)
         {

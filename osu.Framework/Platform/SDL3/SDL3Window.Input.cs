@@ -210,7 +210,7 @@ namespace osu.Framework.Platform.SDL3
             SDL_StartTextInputWithProperties(SDLWindowHandle, props).LogErrorIfFailed();
         });
 
-        public void StopTextInput() => ScheduleCommand(() => SDL_StopTextInput(SDLWindowHandle).LogErrorIfFailed());
+        public virtual void StopTextInput() => ScheduleCommand(() => SDL_StopTextInput(SDLWindowHandle).LogErrorIfFailed());
 
         /// <summary>
         /// Resets internal state of the platform-native IME.

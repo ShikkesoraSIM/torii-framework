@@ -1490,7 +1490,13 @@ namespace osu.Framework.Platform.OpenXR
 
         #endregion
 
-        public void Dispose()
+        public void Dispose() => Dispose(false);
+
+        /// <param name="deleteGraphics">
+        /// Whether to delete the GL objects of the game's swapchains too. Only when the GL context is current on the calling thread:
+        /// for a session which is replaced by another on the same context.
+        /// </param>
+        public void Dispose(bool deleteGraphics)
         {
             Input?.Dispose();
             Input = null;
@@ -1509,10 +1515,17 @@ namespace osu.Framework.Platform.OpenXR
             localFloorSpace = 0;
 
             foreach (var layer in layers)
-                layer.Images?.Dispose();
+            {
+                layer.Images?.Dispose(deleteGraphics);
+                layer.Images = null;
+                layer.Target.NativeFramebuffer = null;
+            }
 
-            panel?.Dispose();
+            panel?.Dispose(deleteGraphics);
             panel = null;
+
+            IsSessionRunning = false;
+            FrameWaited = false;
 
             passthrough?.Dispose();
             passthrough = null;

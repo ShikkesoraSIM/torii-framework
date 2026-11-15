@@ -7,6 +7,7 @@ using System.Drawing;
 using System.Linq;
 using osu.Framework.Graphics.Rendering;
 using osu.Framework.Input.Handlers;
+using osu.Framework.Logging;
 using osu.Framework.Platform;
 using osu.Framework.Platform.OpenXR;
 
@@ -32,6 +33,15 @@ namespace osu.Framework.Android.XR
                 activity.GetExternalFilesDir(null)?.AbsolutePath);
 
             OpenXR.ExitRequested += () => Activity.RunOnUiThread(() => Activity.FinishAndRemoveTask());
+
+            // There's nothing but the headset to show the game in: a failed session is started again, and if that doesn't help the app
+            // closes rather than run on unseen (and heard), which can only be ended from the system menu.
+            OpenXR.SessionRecoveryAttempts = 3;
+            OpenXR.SessionFailed += () =>
+            {
+                Logger.Log("OpenXR couldn't be recovered; closing the app.", level: LogLevel.Error);
+                Activity.RunOnUiThread(() => Activity.FinishAndRemoveTask());
+            };
             drawGame = () => base.DrawFrame();
         }
 

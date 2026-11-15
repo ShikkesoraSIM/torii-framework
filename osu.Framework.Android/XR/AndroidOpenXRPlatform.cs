@@ -30,8 +30,14 @@ namespace osu.Framework.Android.XR
 
         public IEnumerable<string> RequiredExtensions => new[] { "XR_KHR_android_create_instance", "XR_KHR_opengl_es_enable" };
 
+        // Once per process: the session may be created again (see OpenXRHostController.SessionRecoveryAttempts).
+        private static bool loaderInitialised;
+
         public void InitialiseLoader(XrFunctions xr)
         {
+            if (loaderInitialised)
+                return;
+
             if (xr.xrInitializeLoaderKHR == null)
                 throw new InvalidOperationException("The OpenXR loader does not expose xrInitializeLoaderKHR.");
 
@@ -43,6 +49,7 @@ namespace osu.Framework.Android.XR
             };
 
             xr.xrInitializeLoaderKHR((XrLoaderInitInfoBaseHeaderKHR*)&loaderInfo).ThrowIfFailed(nameof(xr.xrInitializeLoaderKHR));
+            loaderInitialised = true;
         }
 
         public void* AllocateInstanceCreateNext()

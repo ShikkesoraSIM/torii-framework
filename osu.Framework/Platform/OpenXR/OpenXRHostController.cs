@@ -106,6 +106,27 @@ namespace osu.Framework.Platform.OpenXR
         public event Action? SessionFailed;
 
         /// <summary>
+        /// How many times in a row the session is thrown away and started again when OpenXR fails, before giving up (see
+        /// <see cref="Failed"/>). For hosts with nothing else to show: a failure which isn't recovered from leaves the app running
+        /// unseen. 0 (the default) gives up at the first failure. Set before running the host.
+        /// </summary>
+        public int SessionRecoveryAttempts { get; set; }
+
+        /// <summary>
+        /// The time between a failure and starting the session again, in milliseconds.
+        /// </summary>
+        private const double session_recovery_delay = 500;
+
+        /// <summary>
+        /// The number of frames a restarted session must display before the failure counts as recovered from.
+        /// </summary>
+        private const int session_recovery_frames = 600;
+
+        private int recoveriesUsed;
+        private int framesSinceRecovery;
+        private bool recovering;
+
+        /// <summary>
         /// Runs an action on the update thread. Set by a host running multi-threaded, before it runs: the session then lives on the draw
         /// thread, and what the game binds to (<see cref="HasInputFocus"/>, <see cref="IsDisplayed"/>, <see cref="SupportsPassthrough"/>)
         /// changes on the update thread still. The events are invoked on the draw thread regardless.
@@ -599,7 +620,22 @@ namespace osu.Framework.Platform.OpenXR
         /// </remarks>
         public void BeforeUpdate()
         {
-            if (xr is not { IsSessionRunning: true, FrameWaited: false } || Failed)
+            if (xr == null || Failed)
+                return;
+
+            // The session may have been stopped or started since the last frame (e.g. the headset was taken off): find out before
+            // waiting for a frame of a session the runtime no longer runs.
+            try
+            {
+                xr.PollEvents();
+            }
+            catch (Exception e)
+            {
+                fail(e);
+                return;
+            }
+
+            if (xr is not { IsSessionRunning: true, FrameWaited: false })
                 return;
 
             waitFrame();
@@ -698,8 +734,19 @@ namespace osu.Framework.Platform.OpenXR
                 return;
             }
 
+            // The context may have been taken off this thread since the last frame: SDL does on Android when the activity is paused,
+            // and what it restores on resume is the context the framework itself had already released for the suspension, i.e. none.
+            // The renderer only makes it current again when the game is drawn, which is after the session's own GL work below.
+            glRenderer.MakeCurrent();
+
             if (xr == null)
             {
+                if (recovering && System.Diagnostics.Stopwatch.GetElapsedTime(lastSessionAttemptTimestamp).TotalMilliseconds < session_recovery_delay)
+                {
+                    idle();
+                    return;
+                }
+
                 bool attempt = !WaitingForHeadset
                                || System.Diagnostics.Stopwatch.GetElapsedTime(lastSessionAttemptTimestamp).TotalMilliseconds >= headset_wait_interval;
 
@@ -743,7 +790,7 @@ namespace osu.Framework.Platform.OpenXR
                 {
                     bool processedInput = waitFrame();
 
-                    if (Failed)
+                    if (Failed || xr == null)
                         return;
 
                     if (processedInput && ScheduleToUpdate != null && xrInput.HadInput)
@@ -789,6 +836,12 @@ namespace osu.Framework.Platform.OpenXR
                 frameTimer?.Enter(FrameTimer.Phase.Submit);
                 xr.EndFrame();
                 frameTimer?.Enter(FrameTimer.Phase.Other);
+
+                if (headsetFrame && recoveriesUsed > 0 && ++framesSinceRecovery >= session_recovery_frames)
+                {
+                    Logger.Log("OpenXR: the restarted session is running.");
+                    recoveriesUsed = 0;
+                }
             }
             catch (Exception e)
             {
@@ -877,8 +930,6 @@ namespace osu.Framework.Platform.OpenXR
         {
             try
             {
-                glRenderer.MakeCurrent();
-
                 xr = new OpenXRSession(platform, PanelSize)
                 {
                     DebugHeadLockedPanel = debugFlag("debug-headlock-panel"),
@@ -926,6 +977,7 @@ namespace osu.Framework.Platform.OpenXR
 
                 WaitingForHeadset = false;
                 headsetWaitException = null;
+                recovering = false;
                 return true;
             }
             catch (Exception e) when (WaitForHeadset != null && isHeadsetUnavailable(e))
@@ -964,6 +1016,36 @@ namespace osu.Framework.Platform.OpenXR
 
         private void fail(Exception e)
         {
+            if (recoveriesUsed < SessionRecoveryAttempts)
+            {
+                recoveriesUsed++;
+                framesSinceRecovery = 0;
+                Logger.Error(e, $"OpenXR failed; starting the session again (attempt {recoveriesUsed} of {SessionRecoveryAttempts}).");
+
+                try
+                {
+                    xr?.Dispose(true);
+                }
+                catch (Exception disposeException)
+                {
+                    Logger.Error(disposeException, "OpenXR: the failed session couldn't be closed cleanly.");
+                }
+
+                xr = null;
+                frameTimer = null;
+                recovering = true;
+                lastSessionAttemptTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+
+                // Nothing is displayed until the new session is (its state changes say when).
+                onUpdateThread(() =>
+                {
+                    isDisplayed.Value = false;
+                    hasInputFocus.Value = false;
+                });
+
+                return;
+            }
+
             Failed = true;
             Logger.Error(e, "OpenXR failed; the game can't be displayed in the headset.");
             SessionFailed?.Invoke();

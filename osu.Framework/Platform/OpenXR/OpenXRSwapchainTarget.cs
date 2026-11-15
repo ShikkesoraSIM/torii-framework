@@ -116,8 +116,14 @@ namespace osu.Framework.Platform.OpenXR
                 GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, depthStencilRenderbuffer);
 
                 var status = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+
                 if (status != FramebufferErrorCode.FramebufferComplete)
-                    throw new InvalidOperationException($"Swapchain framebuffer {i} is incomplete: {status}.");
+                {
+                    // A status of 0 is an error rather than an incomplete framebuffer: usually that no GL context is current on this
+                    // thread (every GL call is then ignored), which the version string tells apart.
+                    string detail = GL.GetString(StringName.Version) == null ? "no GL context is current on this thread" : $"GL error {GL.GetError()}";
+                    throw new InvalidOperationException($"Swapchain framebuffer {i} is incomplete: {status} ({detail}).");
+                }
             }
 
             // The renderer rebinds its back buffer at the start of every frame.
@@ -164,12 +170,34 @@ namespace osu.Framework.Platform.OpenXR
             imageRect = new XrRect2Di { extent = new XrExtent2Di { width = Size.Width, height = Size.Height } },
         };
 
-        public void Dispose()
+        public void Dispose() => Dispose(false);
+
+        /// <param name="deleteGraphics">
+        /// Whether to delete the GL objects too. Only when the GL context is current on the calling thread, and worth it when the
+        /// context lives on (a session being replaced by another, rather than the app closing).
+        /// </param>
+        public void Dispose(bool deleteGraphics)
         {
             if (Swapchain != 0)
                 xr.xrDestroySwapchain(Swapchain);
 
             Swapchain = 0;
+
+            if (!deleteGraphics || graphicsDeleted)
+                return;
+
+            graphicsDeleted = true;
+
+            foreach (int framebuffer in framebuffers)
+            {
+                if (framebuffer != 0)
+                    GL.DeleteFramebuffer(framebuffer);
+            }
+
+            if (depthStencilRenderbuffer != 0)
+                GL.DeleteRenderbuffer(depthStencilRenderbuffer);
         }
+
+        private bool graphicsDeleted;
     }
 }

@@ -3,6 +3,7 @@
 
 using System;
 using System.IO;
+using System.Threading;
 using Android.App;
 using Android.Content;
 using Android.Content.PM;
@@ -67,10 +68,88 @@ namespace osu.Framework.Android
             base.OnCreate(savedInstanceState);
         }
 
+        /// <summary>
+        /// Whether the game is paused while the activity's window doesn't have focus (and isn't started before it has), as SDL does.
+        /// </summary>
+        /// <remarks>
+        /// Not for immersive VR: the window isn't what's looked at there, and whether the app is displayed and has input is the
+        /// OpenXR session's to say. A window which loses focus to something of the system's (or is never given it at launch) would
+        /// otherwise stop the game, frames for the headset included, until focus comes back.
+        /// </remarks>
+        protected virtual bool PauseOnWindowFocusLoss => true;
+
+        public override void OnWindowFocusChanged(bool hasFocus)
+        {
+            if (!hasFocus && !PauseOnWindowFocusLoss)
+            {
+                Logger.Log("Window focus lost; carrying on regardless.");
+                hasFocus = true;
+            }
+
+            base.OnWindowFocusChanged(hasFocus);
+        }
+
         protected override void OnStop()
         {
             base.OnStop();
             Bass.Pause();
+        }
+
+        /// <summary>
+        /// How long the game is given to wind down once the activity is finishing, before the process is ended, in milliseconds.
+        /// </summary>
+        private const int finishing_grace_period = 1500;
+
+        private int processExitScheduled;
+
+        protected override void OnPause()
+        {
+            base.OnPause();
+
+            // Android may hold back onDestroy for seconds, in which the app can be started again.
+            if (IsFinishing)
+                scheduleProcessExit(finishing_grace_period);
+        }
+
+        protected override void OnDestroy()
+        {
+            bool finishing = IsFinishing;
+
+            // Asks the game to quit, and gives it a second to.
+            base.OnDestroy();
+
+            if (finishing)
+                scheduleProcessExit(0);
+        }
+
+        /// <summary>
+        /// Ends the process of an activity which is finishing.
+        /// </summary>
+        /// <remarks>
+        /// Android keeps the process of a finished activity around, with the game in it stopped for good (or stuck in SDL's pause).
+        /// The game can't be run a second time in a process, so starting the app again while that process lives fails: SDL exits the
+        /// process on finding itself there, and the launch shows nothing. Only the launch after that one gets a new process.
+        /// </remarks>
+        private void scheduleProcessExit(int delay)
+        {
+            if (Interlocked.Exchange(ref processExitScheduled, 1) != 0 && delay > 0)
+                return;
+
+            var thread = new Thread(() =>
+            {
+                if (delay > 0)
+                    Thread.Sleep(delay);
+
+                Logger.Log("The activity has finished; ending the process.");
+                Logger.Flush();
+                global::Android.OS.Process.KillProcess(global::Android.OS.Process.MyPid());
+            })
+            {
+                IsBackground = true,
+                Name = "ProcessExit",
+            };
+
+            thread.Start();
         }
 
         protected override void OnRestart()

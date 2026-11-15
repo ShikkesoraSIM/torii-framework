@@ -47,6 +47,20 @@ namespace osu.Framework.Tests.Platform
             assertClose(uv, hit);
         }
 
+        [TestCase(true)]
+        [TestCase(false)]
+        public void TestDepthBehindIsDistanceFromSurface(bool cylinder)
+        {
+            var panel = new PanelGeometry { Cylinder = cylinder, Centre = new Vector3(1, 2, 3), Orientation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, 0.4f) };
+
+            Vector3 surface = panel.SurfacePointLocal(new Vector2(0.5f, 0.3f));
+            Vector3 outward = cylinder ? Vector3.Normalize(surface with { Y = 0 }) : -Vector3.UnitZ;
+
+            Assert.That(panel.DepthBehind(panel.FromPanelSpace(surface)), Is.EqualTo(0).Within(1e-4f));
+            Assert.That(panel.DepthBehind(panel.FromPanelSpace(surface + outward * 0.2f)), Is.EqualTo(0.2f).Within(1e-4f));
+            Assert.That(panel.DepthBehind(panel.FromPanelSpace(surface - outward * 0.3f)), Is.EqualTo(-0.3f).Within(1e-4f));
+        }
+
         private static void assertClose(Vector2 expected, Vector2 actual)
         {
             Assert.That(MathF.Abs(expected.X - actual.X), Is.LessThan(1e-5f), $"{actual} != {expected}");

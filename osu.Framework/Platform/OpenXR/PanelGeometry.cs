@@ -72,6 +72,19 @@ namespace osu.Framework.Platform.OpenXR
         private bool isBehindLocal(Vector3 p) => Cylinder ? p.X * p.X + p.Z * p.Z > Radius * Radius : p.Z < -Radius;
 
         /// <summary>
+        /// How far <paramref name="point"/> (in the base space) is beyond the panel's surface, as seen from the viewer, in metres.
+        /// Negative in front of it.
+        /// </summary>
+        /// <remarks>
+        /// Measured straight out from the surface (radially for the cylinder), whether or not the point is within the panel's bounds.
+        /// </remarks>
+        public float DepthBehind(Vector3 point)
+        {
+            Vector3 p = ToPanelSpace(point);
+            return Cylinder ? MathF.Sqrt(p.X * p.X + p.Z * p.Z) - Radius : -Radius - p.Z;
+        }
+
+        /// <summary>
         /// Intersects a ray with the panel's surface (unbounded: <paramref name="uv"/> may fall outside [0, 1]).
         /// </summary>
         /// <remarks>

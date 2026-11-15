@@ -3,6 +3,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.Threading;
 using osu.Framework.Input.Handlers;
 using osu.Framework.Input.StateChanges;
@@ -21,6 +22,8 @@ namespace osu.Framework.Platform.OpenXR
     /// <item>Each controller casts a ray at the panel. The pointer follows the "active" controller without any button held (hover).</item>
     /// <item>Pulling a trigger makes that controller active and presses the left mouse button, until the same trigger is released.</item>
     /// <item>Thumbsticks scroll. B / Y / Menu act as Escape (back / pause). A / X act as Space.</item>
+    /// <item>A controller pushed too far through the panel (see <see cref="MaxDepthBehindPanel"/>) stops pointing and its trigger reads as
+    /// released, so reaching through the panel doesn't cause stray input.</item>
     /// </list>
     /// </remarks>
     public class OpenXRInputHandler : InputHandler
@@ -42,6 +45,22 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public float EdgeTolerance { get; set; } = 0.05f;
 
+        /// <summary>
+        /// How far past the panel's surface (in metres) a controller's pointer may be pushed before it stops counting as input: no pointing,
+        /// and its trigger reads as released.
+        /// </summary>
+        /// <remarks>
+        /// It counts again once it comes back within <see cref="MaxDepthBehindPanel"/> minus <see cref="reach_hysteresis"/>, and its trigger
+        /// only presses again after being let go, so pulling back out with the trigger held doesn't click.
+        /// </remarks>
+        public float MaxDepthBehindPanel { get; set; } = 0.1f;
+
+        /// <summary>
+        /// How much closer than <see cref="MaxDepthBehindPanel"/> a controller must come back before it counts again, in metres, so it doesn't
+        /// flicker in and out at the limit.
+        /// </summary>
+        private const float reach_hysteresis = 0.03f;
+
         private const float thumbstick_deadzone = 0.2f;
 
         /// <summary>
@@ -53,6 +72,19 @@ namespace osu.Framework.Platform.OpenXR
         private const int right = OpenXRInput.RIGHT;
 
         private readonly bool[] triggerDown = new bool[2];
+
+        private readonly bool[] outOfReach = new bool[2];
+
+        /// <summary>
+        /// Controllers whose trigger is ignored until it's let go (see <see cref="MaxDepthBehindPanel"/>).
+        /// </summary>
+        private readonly bool[] triggerBlocked = new bool[2];
+
+        /// <summary>
+        /// Whether a controller is pushed too far through the panel to count as input (see <see cref="MaxDepthBehindPanel"/>), as of the
+        /// latest frame.
+        /// </summary>
+        public bool IsOutOfReach(int hand) => outOfReach[hand];
 
         private int activeHand = right;
 
@@ -203,7 +235,9 @@ namespace osu.Framework.Platform.OpenXR
 
         public override bool Initialize(GameHost host) => base.Initialize(host);
 
-        internal void Process(XrHandState[] hands, OpenXRSession panel)
+        internal void Process(XrHandState[] hands, OpenXRSession session) => Process(hands, session.Panel, session.PanelSize);
+
+        internal void Process(XrHandState[] hands, PanelGeometry panel, Size panelSize)
         {
             long now = Stopwatch.GetTimestamp();
             float dt = lastTimestamp == 0 ? 0 : (float)Stopwatch.GetElapsedTime(lastTimestamp, now).TotalSeconds;
@@ -215,15 +249,18 @@ namespace osu.Framework.Platform.OpenXR
             if (!Enabled.Value)
                 return;
 
-            Vector2? leftHit = hands[left].AimValid ? raycast(hands[left], panel) : null;
-            Vector2? rightHit = hands[right].AimValid ? raycast(hands[right], panel) : null;
+            updateReach(left, hands[left], panel);
+            updateReach(right, hands[right], panel);
+
+            Vector2? leftHit = hands[left].AimValid && !outOfReach[left] ? raycast(hands[left], panel, panelSize) : null;
+            Vector2? rightHit = hands[right].AimValid && !outOfReach[right] ? raycast(hands[right], panel, panelSize) : null;
             Vector2? hitFor(int hand) => hand == left ? leftHit : rightHit;
 
             bool suppressButtons = SuppressPointerButtons;
             int inputsBefore = PendingInputs.Count;
 
-            bool leftPressed = updateTrigger(left, hands[left].Trigger);
-            bool rightPressed = updateTrigger(right, hands[right].Trigger);
+            bool leftPressed = updateTrigger(left, triggerValue(left, hands[left].Trigger));
+            bool rightPressed = updateTrigger(right, triggerValue(right, hands[right].Trigger));
 
             if (!mouseDown)
             {
@@ -280,6 +317,35 @@ namespace osu.Framework.Platform.OpenXR
         private bool triggerChanged;
 
         /// <summary>
+        /// Updates whether a controller is pushed too far through the panel to count as input (see <see cref="MaxDepthBehindPanel"/>).
+        /// </summary>
+        private void updateReach(int hand, in XrHandState state, PanelGeometry panel)
+        {
+            // Without a pose it can't be pointing anywhere anyway; keep the last state so losing tracking for a moment changes nothing.
+            if (!state.AimValid)
+                return;
+
+            float depth = panel.DepthBehind(state.AimPosition);
+            bool wasOutOfReach = outOfReach[hand];
+
+            outOfReach[hand] = wasOutOfReach ? depth > MaxDepthBehindPanel - reach_hysteresis : depth > MaxDepthBehindPanel;
+
+            if (outOfReach[hand])
+                triggerBlocked[hand] = true;
+        }
+
+        /// <summary>
+        /// The trigger value of a controller as far as input goes: released while it's out of reach, and after that until it's let go.
+        /// </summary>
+        private float triggerValue(int hand, float value)
+        {
+            if (triggerBlocked[hand] && !outOfReach[hand] && value <= TriggerReleaseThreshold)
+                triggerBlocked[hand] = false;
+
+            return triggerBlocked[hand] ? 0 : value;
+        }
+
+        /// <summary>
         /// Updates the pressed state of a trigger with hysteresis.
         /// </summary>
         /// <returns>Whether the trigger was newly pressed.</returns>
@@ -315,12 +381,12 @@ namespace osu.Framework.Platform.OpenXR
         /// Intersects a controller's aim ray with the panel.
         /// </summary>
         /// <returns>The hit position in panel pixels, or null if the ray doesn't point at the panel.</returns>
-        private Vector2? raycast(in XrHandState hand, OpenXRSession panel)
+        private Vector2? raycast(in XrHandState hand, PanelGeometry panel, Size panelSize)
         {
-            if (!panel.Panel.Intersect(hand.AimPosition, hand.AimDirection, out _, out NVector2 uv) || !PanelGeometry.IsWithin(uv, EdgeTolerance))
+            if (!panel.Intersect(hand.AimPosition, hand.AimDirection, out _, out NVector2 uv) || !PanelGeometry.IsWithin(uv, EdgeTolerance))
                 return null;
 
-            return new Vector2(Math.Clamp(uv.X, 0, 1) * panel.PanelSize.Width, Math.Clamp(uv.Y, 0, 1) * panel.PanelSize.Height);
+            return new Vector2(Math.Clamp(uv.X, 0, 1) * panelSize.Width, Math.Clamp(uv.Y, 0, 1) * panelSize.Height);
         }
     }
 }

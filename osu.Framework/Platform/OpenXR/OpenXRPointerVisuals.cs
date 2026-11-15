@@ -73,7 +73,7 @@ namespace osu.Framework.Platform.OpenXR
         {
             Span<PointerQuad> quads = stackalloc PointerQuad[MAX_LAYERS];
 
-            int count = PointerBeams.Build(hands, activeHand, headPosition, panel.Panel, edgeTolerance, laserStartOffset, false, true, quads);
+            int count = PointerBeams.Build(hands, activeHand, headPosition, panel.Panel, edgeTolerance, laserStartOffset, false, true, quads, panel.PointerOutOfReach);
 
             // Where a ghost points is shown by what it pointed at (e.g. a replay's cursor): beams only.
             if (ghosts != null)

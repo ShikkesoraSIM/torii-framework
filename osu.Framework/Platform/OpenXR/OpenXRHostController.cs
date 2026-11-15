@@ -642,6 +642,9 @@ namespace osu.Framework.Platform.OpenXR
 
                     xr.PointerActiveHand = xrInput.ActiveHand;
                     xr.PointerEdgeTolerance = xrInput.EdgeTolerance;
+
+                    for (int hand = 0; hand < 2; hand++)
+                        xr.PointerOutOfReach[hand] = xrInput.IsOutOfReach(hand);
                 }
 
                 // After grabbing, so the panel is where this frame shows it.

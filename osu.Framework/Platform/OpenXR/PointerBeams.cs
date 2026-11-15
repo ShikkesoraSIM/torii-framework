@@ -65,9 +65,11 @@ namespace osu.Framework.Platform.OpenXR
         /// <param name="reticles">Whether the inactive controller gets a reticle where it points. (The active one's target is shown by
         /// the game's own cursor.)</param>
         /// <param name="output">Receives the quads. Must have room for <see cref="MAX_QUADS_PER_HAND"/> per hand.</param>
+        /// <param name="outOfReach">Per hand, whether it's pushed too far through the panel to point (see
+        /// <see cref="OpenXRInputHandler.IsOutOfReach"/>), so it gets no reticle. Empty for none.</param>
         /// <returns>The number of quads written.</returns>
         public static int Build(ReadOnlySpan<XrHandState> hands, int activeHand, Vector3 viewerPosition, PanelGeometry panel, float edgeTolerance, float laserStartOffset,
-                                bool ghost, bool reticles, Span<PointerQuad> output)
+                                bool ghost, bool reticles, Span<PointerQuad> output, ReadOnlySpan<bool> outOfReach = default)
         {
             int count = 0;
 
@@ -99,7 +101,7 @@ namespace osu.Framework.Platform.OpenXR
                     output[count++] = new PointerQuad(image, middle, faceViewerAlong(direction, viewerPosition - middle), new Vector2(length, laser_thickness));
                 }
 
-                if (reticles && onPanel && hand != activeHand)
+                if (reticles && onPanel && hand != activeHand && (hand >= outOfReach.Length || !outOfReach[hand]))
                 {
                     Quaternion facing = panel.SurfaceOrientation(hit);
                     output[count++] = new PointerQuad(PointerImage.Reticle, hit + Vector3.Transform(new Vector3(0, 0, reticle_offset), facing), facing, new Vector2(reticle_diameter));

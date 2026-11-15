@@ -266,6 +266,12 @@ namespace osu.Framework.Platform.OpenXR
         public float PointerEdgeTolerance { get; set; } = 0.05f;
 
         /// <summary>
+        /// Which controllers are pushed too far through the panel to point (see <see cref="OpenXRInputHandler.IsOutOfReach"/>), so they get no
+        /// reticle.
+        /// </summary>
+        public bool[] PointerOutOfReach { get; } = new bool[2];
+
+        /// <summary>
         /// Whether <see cref="WaitFrame"/> has been called for a frame which hasn't been ended yet.
         /// </summary>
         public bool FrameWaited { get; private set; }

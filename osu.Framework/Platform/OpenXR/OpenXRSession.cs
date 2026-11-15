@@ -271,6 +271,22 @@ namespace osu.Framework.Platform.OpenXR
         /// </summary>
         public bool[] PointerOutOfReach { get; } = new bool[2];
 
+        private readonly ControllerIdleTracker idleControllers = new ControllerIdleTracker();
+
+        /// <summary>
+        /// Which controllers are hidden for having been left alone (see <see cref="IdleControllerHideDelay"/>), indexed by hand.
+        /// </summary>
+        public ReadOnlySpan<bool> IdleControllers => idleControllers.Idle;
+
+        /// <summary>
+        /// See <see cref="OpenXRHostController.IdleControllerHideDelay"/>.
+        /// </summary>
+        public double IdleControllerHideDelay
+        {
+            get => idleControllers.HideDelay;
+            set => idleControllers.HideDelay = value;
+        }
+
         /// <summary>
         /// Whether <see cref="WaitFrame"/> has been called for a frame which hasn't been ended yet.
         /// </summary>
@@ -618,7 +634,7 @@ namespace osu.Framework.Platform.OpenXR
                 sceneRenderer.Render(localSpace, time, Input.Hands, PointerActiveHand, new System.Numerics.Vector3(0.45f, 0.8f, 1f), controllerModels,
                     sceneSurfaces.AsSpan(0, surfaceCount), ShowControllers,
                     surfaces && useEnvironmentRenderer && environmentRenderer?.HasRendered == true ? environmentRenderer : null,
-                    ghostHandsVisible ? GhostHands : null);
+                    ghostHandsVisible ? GhostHands : null, idleControllers.Idle);
             }
             catch (Exception e)
             {
@@ -1142,7 +1158,11 @@ namespace osu.Framework.Platform.OpenXR
 
             updatePanelGeometry();
 
-            return Input?.Sync(localSpace, frameState.predictedDisplayTime) == true;
+            if (Input?.Sync(localSpace, frameState.predictedDisplayTime) != true)
+                return false;
+
+            idleControllers.Update(Input.Hands, PointerActiveHand, frameState.predictedDisplayTime / 1e9);
+            return true;
         }
 
         /// <summary>

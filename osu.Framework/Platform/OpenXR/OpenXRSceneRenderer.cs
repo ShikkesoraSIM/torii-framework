@@ -220,9 +220,10 @@ namespace osu.Framework.Platform.OpenXR
         /// <param name="surfaces">Game images to draw behind the controllers, back to front.</param>
         /// <param name="showControllers">Whether the controllers are drawn (otherwise only the surfaces).</param>
         /// <param name="ghosts">Ghost hands prepared for this frame to draw as well, or null.</param>
+        /// <param name="hiddenHands">Per hand, whether its controller isn't drawn (e.g. left alone). Empty for none.</param>
         public void Render(ulong space, long displayTime, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models,
                            ReadOnlySpan<Surface> surfaces = default, bool showControllers = true, OpenXREnvironmentRenderer? environment = null,
-                           OpenXRGhostHands? ghosts = null)
+                           OpenXRGhostHands? ghosts = null, ReadOnlySpan<bool> hiddenHands = default)
         {
             HasRendered = false;
 
@@ -240,7 +241,7 @@ namespace osu.Framework.Platform.OpenXR
 
             for (int hand = 0; showControllers && hand < hands.Length && !anyVisible; hand++)
             {
-                if (!tracked(hand, hands, models, out var position))
+                if (isHidden(hiddenHands, hand) || !tracked(hand, hands, models, out var position))
                     continue;
 
                 if (!viewsLocated)
@@ -297,7 +298,7 @@ namespace osu.Framework.Platform.OpenXR
                 releaseGpuModels();
 
                 for (int eye = 0; eye < 2; eye++)
-                    renderEye(eye, hands, activeHand, accent, models, surfaces, showControllers, environment, ghosts);
+                    renderEye(eye, hands, activeHand, accent, models, surfaces, showControllers, environment, ghosts, hiddenHands);
 
                 HasRendered = true;
             }
@@ -342,8 +343,10 @@ namespace osu.Framework.Platform.OpenXR
                                                                    && p.Y > MathF.Tan(view.fov.angleDown) * d - margin && p.Y < MathF.Tan(view.fov.angleUp) * d + margin;
         }
 
+        private static bool isHidden(ReadOnlySpan<bool> hiddenHands, int hand) => hand < hiddenHands.Length && hiddenHands[hand];
+
         private void renderEye(int eye, XrHandState[] hands, int activeHand, Vector3 accent, OpenXRControllerModels? models, ReadOnlySpan<Surface> surfaces,
-                               bool showControllers, OpenXREnvironmentRenderer? environment, OpenXRGhostHands? ghosts)
+                               bool showControllers, OpenXREnvironmentRenderer? environment, OpenXRGhostHands? ghosts, ReadOnlySpan<bool> hiddenHands)
         {
             var target = eyes[eye];
             int framebuffer = target.Acquire();
@@ -365,6 +368,9 @@ namespace osu.Framework.Platform.OpenXR
 
             for (int hand = 0; showControllers && hand < hands.Length; hand++)
             {
+                if (isHidden(hiddenHands, hand))
+                    continue;
+
                 if (models?.Hands[hand] is { Visible: true } model)
                 {
                     GL.UseProgram(texturedProgram);

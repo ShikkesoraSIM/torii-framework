@@ -463,6 +463,22 @@ namespace osu.Framework.Platform.OpenXR
             }
         }
 
+        private double idleControllerHideDelay = 5;
+
+        /// <summary>
+        /// How long a controller not driving the pointer must be left alone (not moved, turned or touched) before it's hidden, in seconds:
+        /// its model, beam and reticle. It shows again as soon as it's used. 0 or less: never hidden.
+        /// </summary>
+        public double IdleControllerHideDelay
+        {
+            get => idleControllerHideDelay;
+            set
+            {
+                idleControllerHideDelay = value;
+                if (xr != null) xr.IdleControllerHideDelay = value;
+            }
+        }
+
         private byte[]? heldModel;
 
         /// <summary>
@@ -880,6 +896,7 @@ namespace osu.Framework.Platform.OpenXR
                 xr.SuppressBoundaryInPassthrough = suppressBoundaryInPassthrough;
                 xr.FlashReduction = flashReduction;
                 xr.ShowControllers = showControllers;
+                xr.IdleControllerHideDelay = idleControllerHideDelay;
                 xr.HeldModel = heldModel;
                 xr.GhostHands = GhostHands;
                 xr.GenericControllerModels = genericControllerModels;

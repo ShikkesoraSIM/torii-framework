@@ -67,9 +67,11 @@ namespace osu.Framework.Platform.OpenXR
         /// <param name="output">Receives the quads. Must have room for <see cref="MAX_QUADS_PER_HAND"/> per hand.</param>
         /// <param name="outOfReach">Per hand, whether it's pushed too far through the panel to point (see
         /// <see cref="OpenXRInputHandler.IsOutOfReach"/>), so it gets no reticle. Empty for none.</param>
+        /// <param name="hidden">Per hand, whether it's hidden altogether (e.g. left alone, see
+        /// <see cref="OpenXRHostController.IdleControllerHideDelay"/>): no beam or reticle. Empty for none.</param>
         /// <returns>The number of quads written.</returns>
         public static int Build(ReadOnlySpan<XrHandState> hands, int activeHand, Vector3 viewerPosition, PanelGeometry panel, float edgeTolerance, float laserStartOffset,
-                                bool ghost, bool reticles, Span<PointerQuad> output, ReadOnlySpan<bool> outOfReach = default)
+                                bool ghost, bool reticles, Span<PointerQuad> output, ReadOnlySpan<bool> outOfReach = default, ReadOnlySpan<bool> hidden = default)
         {
             int count = 0;
 
@@ -77,7 +79,7 @@ namespace osu.Framework.Platform.OpenXR
             {
                 ref readonly var state = ref hands[hand];
 
-                if (!state.AimValid)
+                if (!state.AimValid || (hand < hidden.Length && hidden[hand]))
                     continue;
 
                 Vector3 direction = state.AimDirection;

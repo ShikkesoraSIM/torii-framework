@@ -119,6 +119,11 @@ namespace osu.Framework.Graphics.Rendering.Deferred
                 }
             }
 
+            foreach (var buffer in context.PendingStorageBuffers)
+                buffer.Commit();
+
+            context.PendingStorageBuffers.Clear();
+
             context.VertexManager.Commit();
             context.UniformBufferManager.Commit();
         }

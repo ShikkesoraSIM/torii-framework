@@ -20,7 +20,13 @@ namespace osu.Framework.Graphics.Rendering.Deferred
         private readonly TData[] data;
         private readonly DeviceBuffer buffer;
         private readonly DeferredRenderer renderer;
+
         private readonly int elementSize;
+
+        // Preserve committed bytes between frames so sparse dirty ranges retain untouched entries.
+        private readonly byte[] pendingData;
+        private int dirtyStart = int.MaxValue;
+        private int dirtyEnd;
 
         public DeferredShaderStorageBufferObject(DeferredRenderer renderer, int ssboSize)
         {
@@ -34,6 +40,7 @@ namespace osu.Framework.Graphics.Rendering.Deferred
             buffer = renderer.Factory.CreateBuffer(new BufferDescription((uint)(elementSize * Size), BufferUsage.StructuredBufferReadOnly | BufferUsage.Dynamic, (uint)elementSize, true));
 
             data = new TData[Size];
+            pendingData = new byte[elementSize * Size];
         }
 
         public TData this[int index]
@@ -50,7 +57,31 @@ namespace osu.Framework.Graphics.Rendering.Deferred
         }
 
         public void Write(int index, MemoryReference memory)
-            => memory.WriteTo(renderer.Context, buffer, index * elementSize);
+        {
+            ThreadSafety.EnsureDrawThread();
+
+            if (dirtyEnd == 0)
+                renderer.Context.PendingStorageBuffers.Add(this);
+
+            int offset = index * elementSize;
+            renderer.Context.GetRegion(memory).CopyTo(pendingData.AsSpan(offset));
+            dirtyStart = Math.Min(dirtyStart, offset);
+            dirtyEnd = Math.Max(dirtyEnd, offset + memory.Length);
+        }
+
+        public void Commit()
+        {
+            ThreadSafety.EnsureDrawThread();
+
+            if (dirtyEnd == 0)
+                return;
+
+            // All deferred storage writes precede rendering. Upload the final changed range once,
+            // retaining untouched entries between sparse writes instead of mapping for every mask.
+            renderer.Context.Device.UpdateBuffer(buffer, (uint)dirtyStart, pendingData.AsSpan(dirtyStart, dirtyEnd - dirtyStart));
+            dirtyStart = int.MaxValue;
+            dirtyEnd = 0;
+        }
 
         public ResourceSet GetResourceSet(ResourceLayout layout)
             => renderer.Factory.CreateResourceSet(new ResourceSetDescription(layout, buffer));

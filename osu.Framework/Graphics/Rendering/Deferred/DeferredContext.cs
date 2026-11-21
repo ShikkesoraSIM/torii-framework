@@ -24,6 +24,7 @@ namespace osu.Framework.Graphics.Rendering.Deferred
         public readonly ResourceAllocator Allocator;
         public readonly UniformBufferManager UniformBufferManager;
         public readonly VertexManager VertexManager;
+        public readonly List<IDeferredShaderStorageBufferObject> PendingStorageBuffers = new List<IDeferredShaderStorageBufferObject>();
 
         public DeferredContext(DeferredRenderer renderer)
         {

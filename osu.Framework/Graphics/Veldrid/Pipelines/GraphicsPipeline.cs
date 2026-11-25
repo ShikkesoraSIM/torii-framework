@@ -38,6 +38,15 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
         private DeviceBuffer? currentVertexBuffer;
         private VertexLayoutDescription currentVertexLayout;
 
+        private bool pipelineDirty = true;
+        private Pipeline? currentPipeline;
+        private global::Veldrid.PrimitiveTopology currentTopology;
+        private ResourceLayout[]?[] layoutArrayPool = new ResourceLayout[]?[16];
+        private ResourceSet?[] boundResourceSets = new ResourceSet?[16];
+        private uint[] boundUniformOffsets = new uint[16];
+        private bool[] boundResourceSetHasOffset = new bool[16];
+        private (int set, ResourceSet resourceSet, uint offset, bool hasOffset)[] pendingResourceBindings = new (int, ResourceSet, uint, bool)[16];
+
         public GraphicsPipeline(VeldridDevice device)
             : base(device)
         {
@@ -55,6 +64,9 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
             currentShader = null;
             currentIndexBuffer = null;
             currentVertexBuffer = null;
+            currentPipeline = null;
+            pipelineDirty = true;
+            Array.Clear(boundResourceSets);
         }
 
         /// <summary>
@@ -75,7 +87,13 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
         /// </summary>
         /// <param name="enabled">Whether the scissor test is enabled.</param>
         public void SetScissorState(bool enabled)
-            => pipelineDesc.RasterizerState.ScissorTestEnabled = enabled;
+        {
+            if (pipelineDesc.RasterizerState.ScissorTestEnabled == enabled)
+                return;
+
+            pipelineDesc.RasterizerState.ScissorTestEnabled = enabled;
+            pipelineDirty = true;
+        }
 
         /// <summary>
         /// Sets the active shader.
@@ -85,8 +103,12 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
         {
             shader.EnsureShaderInitialised();
 
+            if (currentShader == shader)
+                return;
+
             currentShader = shader;
             pipelineDesc.ShaderSet.Shaders = shader.Shaders;
+            pipelineDirty = true;
         }
 
         /// <summary>
@@ -102,6 +124,7 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
             pipelineDesc.BlendState.AttachmentStates[0].DestinationAlphaFactor = blendingParameters.DestinationAlpha.ToBlendFactor();
             pipelineDesc.BlendState.AttachmentStates[0].ColorFunction = blendingParameters.RGBEquation.ToBlendFunction();
             pipelineDesc.BlendState.AttachmentStates[0].AlphaFunction = blendingParameters.AlphaEquation.ToBlendFunction();
+            pipelineDirty = true;
         }
 
         /// <summary>
@@ -109,7 +132,14 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
         /// </summary>
         /// <param name="blendingMask">The blending mask.</param>
         public void SetBlendMask(BlendingMask blendingMask)
-            => pipelineDesc.BlendState.AttachmentStates[0].ColorWriteMask = blendingMask.ToColorWriteMask();
+        {
+            var mask = blendingMask.ToColorWriteMask();
+            if (pipelineDesc.BlendState.AttachmentStates[0].ColorWriteMask == mask)
+                return;
+
+            pipelineDesc.BlendState.AttachmentStates[0].ColorWriteMask = mask;
+            pipelineDirty = true;
+        }
 
         /// <summary>
         /// Sets the active viewport rectangle.
@@ -134,6 +164,7 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
             pipelineDesc.DepthStencilState.DepthTestEnabled = depthInfo.DepthTest;
             pipelineDesc.DepthStencilState.DepthWriteEnabled = depthInfo.WriteDepth;
             pipelineDesc.DepthStencilState.DepthComparison = depthInfo.Function.ToComparisonKind();
+            pipelineDirty = true;
         }
 
         /// <summary>
@@ -149,6 +180,7 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
             pipelineDesc.DepthStencilState.StencilBack.Fail = pipelineDesc.DepthStencilState.StencilFront.Fail = stencilInfo.StencilTestFailOperation.ToStencilOperation();
             pipelineDesc.DepthStencilState.StencilBack.DepthFail = pipelineDesc.DepthStencilState.StencilFront.DepthFail = stencilInfo.DepthTestFailOperation.ToStencilOperation();
             pipelineDesc.DepthStencilState.StencilBack.Comparison = pipelineDesc.DepthStencilState.StencilFront.Comparison = stencilInfo.TestFunction.ToComparisonKind();
+            pipelineDirty = true;
         }
 
         /// <summary>
@@ -163,6 +195,11 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
 
             Commands.SetFramebuffer(fb);
             pipelineDesc.Outputs = fb.OutputDescription;
+
+            // Changing framebuffer starts a new render pass on Vulkan, invalidating bound pipeline & resource sets.
+            currentPipeline = null;
+            pipelineDirty = true;
+            Array.Clear(boundResourceSets);
         }
 
         /// <summary>
@@ -176,7 +213,11 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
                 return;
 
             Commands.SetVertexBuffer(0, buffer);
-            pipelineDesc.ShaderSet.VertexLayouts[0] = layout;
+            if (!layout.Equals(currentVertexLayout))
+            {
+                pipelineDesc.ShaderSet.VertexLayouts[0] = layout;
+                pipelineDirty = true;
+            }
 
             FrameStatistics.Increment(StatisticsCounterType.VBufBinds);
 
@@ -249,51 +290,108 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
             if (currentIndexBuffer == null)
                 throw new InvalidOperationException("No index buffer bound.");
 
-            pipelineDesc.PrimitiveTopology = topology;
-            Array.Resize(ref pipelineDesc.ResourceLayouts, currentShader.LayoutCount);
-
-            // Activate texture layouts.
-            foreach (var (unit, _) in attachedTextures)
+            if (currentTopology != topology)
             {
-                var layout = currentShader.GetTextureLayout(unit);
-                if (layout == null)
-                    continue;
-
-                pipelineDesc.ResourceLayouts[layout.Set] = layout.Layout;
+                currentTopology = topology;
+                pipelineDesc.PrimitiveTopology = topology;
+                pipelineDirty = true;
             }
 
-            // Activate uniform buffer layouts.
-            foreach (var (name, _) in attachedUniformBuffers)
-            {
-                var layout = currentShader.GetUniformBufferLayout(name);
-                if (layout == null)
-                    continue;
+            int layoutCount = currentShader.LayoutCount;
+            if (layoutCount >= layoutArrayPool.Length)
+                Array.Resize(ref layoutArrayPool, layoutCount + 8);
 
-                pipelineDesc.ResourceLayouts[layout.Set] = layout.Layout;
+            var resourceLayouts = layoutArrayPool[layoutCount] ??= new ResourceLayout[layoutCount];
+            if (!ReferenceEquals(pipelineDesc.ResourceLayouts, resourceLayouts))
+            {
+                pipelineDesc.ResourceLayouts = resourceLayouts;
+                pipelineDirty = true;
             }
 
-            // Activate the pipeline.
-            Commands.SetPipeline(createPipeline());
+            if (layoutCount > boundResourceSets.Length)
+            {
+                Array.Resize(ref boundResourceSets, layoutCount + 8);
+                Array.Resize(ref boundUniformOffsets, layoutCount + 8);
+                Array.Resize(ref boundResourceSetHasOffset, layoutCount + 8);
+            }
 
-            // Activate texture resources.
+            int bindingCount = 0;
+
+            // Single pass over texture resources: resolve layouts and resource sets together.
             foreach (var (unit, texture) in attachedTextures)
             {
                 var layout = currentShader.GetTextureLayout(unit);
                 if (layout == null)
                     continue;
 
-                Commands.SetGraphicsResourceSet((uint)layout.Set, texture.GetResourceSet(Factory, layout.Layout));
+                int set = layout.Set;
+                if (!ReferenceEquals(resourceLayouts[set], layout.Layout))
+                {
+                    resourceLayouts[set] = layout.Layout;
+                    pipelineDirty = true;
+                }
+
+                if (bindingCount >= pendingResourceBindings.Length)
+                    Array.Resize(ref pendingResourceBindings, pendingResourceBindings.Length * 2);
+
+                pendingResourceBindings[bindingCount++] = (set, texture.GetResourceSet(Factory, layout.Layout), 0, false);
             }
 
-            // Activate uniform buffer resources.
+            // Single pass over uniform buffer resources: resolve layouts and resource sets together.
             foreach (var (name, buffer) in attachedUniformBuffers)
             {
                 var layout = currentShader.GetUniformBufferLayout(name);
                 if (layout == null)
                     continue;
 
+                int set = layout.Set;
+                if (!ReferenceEquals(resourceLayouts[set], layout.Layout))
+                {
+                    resourceLayouts[set] = layout.Layout;
+                    pipelineDirty = true;
+                }
+
+                if (bindingCount >= pendingResourceBindings.Length)
+                    Array.Resize(ref pendingResourceBindings, pendingResourceBindings.Length * 2);
+
                 uint bufferOffset = uniformBufferOffsets.GetValueOrDefault(buffer);
-                Commands.SetGraphicsResourceSet((uint)layout.Set, buffer.GetResourceSet(layout.Layout), 1, ref bufferOffset);
+                pendingResourceBindings[bindingCount++] = (set, buffer.GetResourceSet(layout.Layout), bufferOffset, true);
+            }
+
+            // Activate the pipeline only when state changed.
+            if (pipelineDirty || currentPipeline == null)
+            {
+                var pipeline = createPipeline();
+                pipelineDirty = false;
+
+                if (!ReferenceEquals(pipeline, currentPipeline))
+                {
+                    Commands.SetPipeline(pipeline);
+                    currentPipeline = pipeline;
+                    Array.Clear(boundResourceSets);
+                }
+            }
+
+            // Activate resource sets only when changed for their slot.
+            for (int i = 0; i < bindingCount; i++)
+            {
+                var (set, rs, offset, hasOffset) = pendingResourceBindings[i];
+
+                if (ReferenceEquals(boundResourceSets[set], rs)
+                    && boundResourceSetHasOffset[set] == hasOffset
+                    && (!hasOffset || boundUniformOffsets[set] == offset))
+                {
+                    continue;
+                }
+
+                boundResourceSets[set] = rs;
+                boundResourceSetHasOffset[set] = hasOffset;
+                boundUniformOffsets[set] = offset;
+
+                if (hasOffset)
+                    Commands.SetGraphicsResourceSet((uint)set, rs, 1, ref offset);
+                else
+                    Commands.SetGraphicsResourceSet((uint)set, rs);
             }
 
             int indexStart = currentIndexBuffer.TranslateToIndex(vertexStart);

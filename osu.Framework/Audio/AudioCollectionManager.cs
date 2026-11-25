@@ -13,12 +13,13 @@ namespace osu.Framework.Audio
         where T : AudioComponent
     {
         internal List<T> Items = new List<T>();
+        private readonly HashSet<T> itemSet = new HashSet<T>(ReferenceEqualityComparer.Instance);
 
         public void AddItem(T item)
         {
             EnqueueAction(delegate
             {
-                if (Items.Contains(item)) return;
+                if (!itemSet.Add(item)) return;
 
                 if (item is IAdjustableAudioComponent adjustable)
                     adjustable.BindAdjustments(this);
@@ -32,12 +33,19 @@ namespace osu.Framework.Audio
         {
             EnqueueAction(() =>
             {
-                if (!Items.Contains(item)) return;
+                if (!itemSet.Remove(item)) return;
 
                 if (item is IAdjustableAudioComponent adjustable)
                     adjustable.UnbindAdjustments(this);
 
-                Items.Remove(item);
+                int index = Items.IndexOf(item);
+                if (index >= 0)
+                {
+                    int last = Items.Count - 1;
+                    Items[index] = Items[last];
+                    Items.RemoveAt(last);
+                }
+
                 ItemRemoved(item);
             });
         }
@@ -54,13 +62,16 @@ namespace osu.Framework.Audio
         {
             base.UpdateChildren();
 
-            for (int i = 0; i < Items.Count; i++)
+            for (int i = Items.Count - 1; i >= 0; i--)
             {
                 var item = Items[i];
 
                 if (!item.IsAlive)
                 {
-                    Items.RemoveAt(i--);
+                    int last = Items.Count - 1;
+                    Items[i] = Items[last];
+                    Items.RemoveAt(last);
+                    itemSet.Remove(item);
                     ItemRemoved(item);
                     continue;
                 }

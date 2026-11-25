@@ -551,13 +551,18 @@ namespace osu.Framework.Graphics.Containers
                     Target = clampedTarget;
             }
 
-            // Exponential interpolation between the target and our current scroll position.
-            Current = Interpolation.Lerp(Target, Current, Math.Exp(-localDistanceDecay * Time.Elapsed));
+            if (Current != Target)
+            {
+                // Exponential interpolation between the target and our current scroll position.
+                Current = Interpolation.Lerp(Target, Current, Math.Exp(-localDistanceDecay * Time.Elapsed));
 
-            // This prevents us from entering the de-normalized range of floating point numbers when approaching target closely.
-            if (Precision.AlmostEquals(Current, Target))
-                Current = Target;
+                // This prevents us from entering the de-normalized range of floating point numbers when approaching target closely.
+                if (Precision.AlmostEquals(Current, Target))
+                    Current = Target;
+            }
         }
+
+        private float lastScrollbarPosition = float.NaN;
 
         protected override void UpdateAfterChildren()
         {
@@ -577,10 +582,17 @@ namespace osu.Framework.Graphics.Containers
                 scrollbarCache.Validate();
             }
 
-            if (ScrollDirection == Direction.Horizontal)
-                Scrollbar.X = ToScrollbarPosition(Current);
-            else
-                Scrollbar.Y = ToScrollbarPosition(Current);
+            float scrollbarPosition = ToScrollbarPosition(Current);
+
+            if (scrollbarPosition != lastScrollbarPosition)
+            {
+                lastScrollbarPosition = scrollbarPosition;
+
+                if (ScrollDirection == Direction.Horizontal)
+                    Scrollbar.X = scrollbarPosition;
+                else
+                    Scrollbar.Y = scrollbarPosition;
+            }
 
             ApplyCurrentToContent();
         }

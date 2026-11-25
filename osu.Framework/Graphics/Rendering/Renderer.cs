@@ -105,6 +105,7 @@ namespace osu.Framework.Graphics.Rendering
 
         private readonly ConcurrentQueue<ScheduledDelegate> expensiveOperationQueue = new ConcurrentQueue<ScheduledDelegate>();
         private readonly ConcurrentQueue<INativeTexture> textureUploadQueue = new ConcurrentQueue<INativeTexture>();
+        private readonly ConcurrentDictionary<INativeTexture, byte> textureUploadSet = new ConcurrentDictionary<INativeTexture, byte>();
         private readonly RendererDisposalQueue disposalQueue = new RendererDisposalQueue();
 
         private readonly Scheduler resetScheduler = new Scheduler(() => ThreadSafety.IsDrawThread, new StopwatchClock(true)); // force no thread set until we are actually on the draw thread.
@@ -136,6 +137,7 @@ namespace osu.Framework.Graphics.Rendering
         private IUniformBuffer<GlobalUniformData>? globalUniformBuffer;
         private IVertexBatch<TexturedVertex2D>? defaultQuadBatch;
         private IVertexBatch? currentActiveBatch;
+        internal IVertexBatch? ActiveBatch => currentActiveBatch;
         private MaskingInfo currentMaskingInfo;
         private int lastActiveTextureUnit;
         private bool globalUniformsChanged;
@@ -282,6 +284,7 @@ namespace osu.Framework.Graphics.Rendering
             // continue attempting to upload textures until enough uploads have been performed.
             while (textureUploadQueue.TryDequeue(out INativeTexture? texture))
             {
+                textureUploadSet.TryRemove(texture, out _);
                 statTextureUploadsDequeued.Value++;
 
                 if (!texture.Upload())
@@ -848,23 +851,25 @@ namespace osu.Framework.Graphics.Rendering
 
         private void setWrapMode(WrapMode wrapModeS, WrapMode wrapModeT)
         {
-            if (wrapModeS != CurrentWrapModeS)
-            {
+            bool changedS = wrapModeS != CurrentWrapModeS;
+            bool changedT = wrapModeT != CurrentWrapModeT;
+
+            if (!changedS && !changedT)
+                return;
+
+            if (changedS)
                 TextureBindTrace.RecordWrap("wrap S cambio");
-                FlushCurrentBatch(FlushBatchSource.BindTexture);
-
-                CurrentWrapModeS = wrapModeS;
-                globalUniformsChanged = true;
-            }
-
-            if (wrapModeT != CurrentWrapModeT)
-            {
+            if (changedT)
                 TextureBindTrace.RecordWrap("wrap T cambio");
-                FlushCurrentBatch(FlushBatchSource.BindTexture);
 
+            FlushCurrentBatch(FlushBatchSource.BindTexture);
+
+            if (changedS)
+                CurrentWrapModeS = wrapModeS;
+            if (changedT)
                 CurrentWrapModeT = wrapModeT;
-                globalUniformsChanged = true;
-            }
+
+            globalUniformsChanged = true;
         }
 
         /// <summary>
@@ -889,7 +894,7 @@ namespace osu.Framework.Graphics.Rendering
         /// <param name="texture">The texture to be uploaded.</param>
         internal void EnqueueTextureUpload(INativeTexture texture)
         {
-            if (!IsInitialised || textureUploadQueue.Contains(texture))
+            if (!IsInitialised || !textureUploadSet.TryAdd(texture, 0))
                 return;
 
             textureUploadQueue.Enqueue(texture);

@@ -246,10 +246,14 @@ namespace osu.Framework.Graphics.Containers
             }
         }
 
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> has_custom_draw_node_cache = new();
+
         [BackgroundDependencyLoader(true)]
         private void load(ShaderManager shaders, CancellationToken? cancellation)
         {
-            hasCustomDrawNode = GetType().GetMethod(nameof(CreateDrawNode))?.DeclaringType != typeof(CompositeDrawable);
+            hasCustomDrawNode = has_custom_draw_node_cache.GetOrAdd(
+                GetType(),
+                static t => t.GetMethod(nameof(CreateDrawNode))?.DeclaringType != typeof(CompositeDrawable));
 
             Shader ??= shaders?.Load(VertexShaderDescriptor.TEXTURE_2, FragmentShaderDescriptor.TEXTURE);
 
@@ -1045,35 +1049,39 @@ namespace osu.Framework.Graphics.Containers
             if (invalidation == Invalidation.None)
                 return anyInvalidated;
 
-            IReadOnlyList<Drawable> targetChildren = aliveInternalChildren;
-
             // Non-layout flags must be propagated to all children. As such, it is simplest + quickest to propagate all other relevant flags along with them.
             if ((invalidation & ~Invalidation.Layout) > 0)
-                targetChildren = internalChildren;
-
-            for (int i = 0; i < targetChildren.Count; ++i)
             {
-                Drawable c = targetChildren[i];
-
-                Invalidation childInvalidation = invalidation;
-                if ((invalidation & Invalidation.RequiredParentSizeToFit) > 0)
-                    childInvalidation |= Invalidation.DrawInfo;
-
-                // Other geometry things like rotation, shearing, etc don't affect child properties.
-                childInvalidation &= ~Invalidation.MiscGeometry;
-
-                // Relative positioning can however affect child geometry.
-                if (c.RelativePositionAxes != Axes.None && (invalidation & Invalidation.DrawSize) > 0)
-                    childInvalidation |= Invalidation.MiscGeometry;
-
-                // No draw size changes if relative size axes does not propagate it downward.
-                if (c.RelativeSizeAxes == Axes.None)
-                    childInvalidation &= ~Invalidation.DrawSize;
-
-                anyInvalidated |= c.Invalidate(childInvalidation, InvalidationSource.Parent);
+                for (int i = 0; i < internalChildren.Count; ++i)
+                    anyInvalidated |= propagateInvalidationToChild(internalChildren[i], invalidation);
+            }
+            else
+            {
+                for (int i = 0; i < aliveInternalChildren.Count; ++i)
+                    anyInvalidated |= propagateInvalidationToChild(aliveInternalChildren[i], invalidation);
             }
 
             return anyInvalidated;
+        }
+
+        private static bool propagateInvalidationToChild(Drawable c, Invalidation invalidation)
+        {
+            Invalidation childInvalidation = invalidation;
+            if ((invalidation & Invalidation.RequiredParentSizeToFit) > 0)
+                childInvalidation |= Invalidation.DrawInfo;
+
+            // Other geometry things like rotation, shearing, etc don't affect child properties.
+            childInvalidation &= ~Invalidation.MiscGeometry;
+
+            // Relative positioning can however affect child geometry.
+            if (c.RelativePositionAxes != Axes.None && (invalidation & Invalidation.DrawSize) > 0)
+                childInvalidation |= Invalidation.MiscGeometry;
+
+            // No draw size changes if relative size axes does not propagate it downward.
+            if (c.RelativeSizeAxes == Axes.None)
+                childInvalidation &= ~Invalidation.DrawSize;
+
+            return c.Invalidate(childInvalidation, InvalidationSource.Parent);
         }
 
         /// <summary>
@@ -1972,7 +1980,12 @@ namespace osu.Framework.Graphics.Containers
 
         private void autoSizeResizeTo(Vector2 newSize, double duration = 0, Easing easing = Easing.None)
         {
-            var currentTransform = TransformsForTargetMember(nameof(baseSize)).FirstOrDefault() as AutoSizeTransform;
+            AutoSizeTransform currentTransform = null;
+            foreach (Transform t in TransformsForTargetMember(nameof(baseSize)))
+            {
+                currentTransform = t as AutoSizeTransform;
+                break;
+            }
 
             if ((currentTransform?.EndValue ?? Size) != newSize)
             {

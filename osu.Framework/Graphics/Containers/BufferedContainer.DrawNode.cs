@@ -164,6 +164,7 @@ namespace osu.Framework.Graphics.Containers
             {
                 base.Dispose(isDisposing);
                 blurParametersBuffer?.Dispose();
+                grayscaleParametersBuffer?.Dispose();
             }
 
             [StructLayout(LayoutKind.Sequential, Pack = 1)]

@@ -91,10 +91,12 @@ namespace osu.Framework.Platform.Windows
                 ? new SDL3WindowsWindow(preferredSurface, Options.FriendlyGameName)
                 : new SDL2WindowsWindow(preferredSurface, Options.FriendlyGameName);
 
-        public override IEnumerable<KeyBinding> PlatformKeyBindings => base.PlatformKeyBindings.Concat(new[]
+        private KeyBinding[]? cachedPlatformKeyBindings;
+
+        public override IEnumerable<KeyBinding> PlatformKeyBindings => cachedPlatformKeyBindings ??= base.PlatformKeyBindings.Concat(new[]
         {
             new KeyBinding(new KeyCombination(InputKey.Alt, InputKey.F4), PlatformAction.Exit)
-        }).ToList();
+        }).ToArray();
 
         protected override void Dispose(bool isDisposing)
         {
@@ -122,7 +124,8 @@ namespace osu.Framework.Platform.Windows
             {
                 // We set process priority after the window becomes active, because for whatever reason windows will
                 // reset this when the window becomes active after being inactive when game mode is enabled.
-                Process.GetCurrentProcess().PriorityClass = active ? ProcessPriorityClass.High : ProcessPriorityClass.Normal;
+                using var process = Process.GetCurrentProcess();
+                process.PriorityClass = active ? ProcessPriorityClass.High : ProcessPriorityClass.Normal;
             }
             catch
             {

@@ -678,20 +678,24 @@ namespace osu.Framework.Graphics
         {
             get
             {
+                Axes axes = RelativePositionAxes;
+                if (axes == Axes.None)
+                    return Position;
+
                 Vector2 offset = Vector2.Zero;
 
-                if (Parent != null && RelativePositionAxes != Axes.None)
+                if (Parent != null)
                 {
                     offset = Parent.RelativeChildOffset;
 
-                    if (!RelativePositionAxes.HasFlagFast(Axes.X))
+                    if (!axes.HasFlagFast(Axes.X))
                         offset.X = 0;
 
-                    if (!RelativePositionAxes.HasFlagFast(Axes.Y))
+                    if (!axes.HasFlagFast(Axes.Y))
                         offset.Y = 0;
                 }
 
-                return ApplyRelativeAxes(RelativePositionAxes, Position - offset, FillMode.Stretch);
+                return ApplyRelativeAxes(axes, Position - offset, FillMode.Stretch);
             }
         }
 
@@ -827,7 +831,9 @@ namespace osu.Framework.Graphics
         /// <summary>
         /// Absolute size of this Drawable in the <see cref="Parent"/>'s coordinate system.
         /// </summary>
-        public Vector2 DrawSize => drawSizeBacking.IsValid ? drawSizeBacking : drawSizeBacking.Value = ApplyRelativeAxes(RelativeSizeAxes, Size, FillMode);
+        public Vector2 DrawSize => drawSizeBacking.IsValid
+            ? drawSizeBacking
+            : drawSizeBacking.Value = RelativeSizeAxes == Axes.None ? Size : ApplyRelativeAxes(RelativeSizeAxes, Size, FillMode);
 
         /// <summary>
         /// X component of <see cref="DrawSize"/>.
@@ -888,8 +894,8 @@ namespace osu.Framework.Graphics
         {
             get
             {
-                Vector2 s = LayoutSize;
-                return new RectangleF(-margin.Left, -margin.Top, s.X, s.Y);
+                Vector2 s = DrawSize;
+                return new RectangleF(-margin.Left, -margin.Top, s.X + margin.TotalHorizontal, s.Y + margin.TotalVertical);
             }
         }
 

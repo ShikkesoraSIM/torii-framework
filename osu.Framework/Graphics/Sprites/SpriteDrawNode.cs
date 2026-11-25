@@ -28,6 +28,7 @@ namespace osu.Framework.Graphics.Sprites
         protected Quad ConservativeScreenSpaceDrawQuad;
 
         private bool hasOpaqueInterior;
+        private bool canDrawOpaqueInterior;
 
         public SpriteDrawNode(Sprite source)
             : base(source)
@@ -51,7 +52,9 @@ namespace osu.Framework.Graphics.Sprites
                                 && DrawColourInfo.Blending == BlendingParameters.Mixture
                                 && DrawColourInfo.Colour.HasSingleColour;
 
-            if (CanDrawOpaqueInterior)
+            canDrawOpaqueInterior = Texture?.Available == true && Texture.Opacity == Opacity.Opaque && hasOpaqueInterior;
+
+            if (canDrawOpaqueInterior)
                 ConservativeScreenSpaceDrawQuad = Source.ConservativeScreenSpaceDrawQuad;
         }
 
@@ -104,6 +107,6 @@ namespace osu.Framework.Graphics.Sprites
             UnbindTextureShader(renderer);
         }
 
-        protected internal override bool CanDrawOpaqueInterior => Texture?.Available == true && Texture.Opacity == Opacity.Opaque && hasOpaqueInterior;
+        protected internal override bool CanDrawOpaqueInterior => canDrawOpaqueInterior;
     }
 }

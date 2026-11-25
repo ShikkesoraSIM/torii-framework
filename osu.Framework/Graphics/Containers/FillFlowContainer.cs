@@ -96,6 +96,8 @@ namespace osu.Framework.Graphics.Containers
             return result;
         }
 
+        private readonly List<float> rowOffsetsToMiddle = new List<float>();
+
         protected override IEnumerable<Vector2> ComputeLayoutPositions()
         {
             var max = MaximumSize;
@@ -110,19 +112,29 @@ namespace osu.Framework.Graphics.Containers
                 max.Y = AutoSizeAxes.HasFlagFast(Axes.Y) ? float.MaxValue : s.Y;
             }
 
-            var children = FlowingChildren.ToArray();
-            if (children.Length == 0)
+            IReadOnlyList<Drawable> children = FlowingChildren as IReadOnlyList<Drawable> ?? FlowingChildren.ToArray();
+            int childrenCount = children.Count;
+            if (childrenCount == 0)
                 yield break;
 
             // The positions for each child we will return later on.
-            var layoutPositions = ArrayPool<Vector2>.Shared.Rent(children.Length);
+            var layoutPositions = ArrayPool<Vector2>.Shared.Rent(childrenCount);
 
             // We need to keep track of row widths such that we can compute correct
             // positions for horizontal centre anchor children.
             // We also store for each child to which row it belongs.
-            int[] rowIndices = ArrayPool<int>.Shared.Rent(children.Length);
+            int[] rowIndices = ArrayPool<int>.Shared.Rent(childrenCount);
 
-            var rowOffsetsToMiddle = new List<float> { 0 };
+            rowOffsetsToMiddle.Clear();
+            rowOffsetsToMiddle.Add(0);
+
+            Axes fillAxes = Direction switch
+            {
+                FillDirection.Full => Axes.Both,
+                FillDirection.Horizontal => Axes.X,
+                FillDirection.Vertical => Axes.Y,
+                _ => throw new ArgumentException($"{Direction.ToString()} is not defined")
+            };
 
             // Variables keeping track of the current state while iterating over children
             // and computing initial flow positions.
@@ -136,27 +148,9 @@ namespace osu.Framework.Graphics.Containers
             // defer the return of the rented lists
             try
             {
-                for (int i = 0; i < children.Length; ++i)
+                for (int i = 0; i < childrenCount; ++i)
                 {
                     Drawable c = children[i];
-
-                    static Axes toAxes(FillDirection direction)
-                    {
-                        switch (direction)
-                        {
-                            case FillDirection.Full:
-                                return Axes.Both;
-
-                            case FillDirection.Horizontal:
-                                return Axes.X;
-
-                            case FillDirection.Vertical:
-                                return Axes.Y;
-
-                            default:
-                                throw new ArgumentException($"{direction.ToString()} is not defined");
-                        }
-                    }
 
                     // In some cases (see the right hand side of the conditional) we want to permit relatively sized children
                     // in our fill direction; specifically, when children use FillMode.Fit to preserve the aspect ratio.
@@ -164,7 +158,7 @@ namespace osu.Framework.Graphics.Containers
                     // in the vertical direction. Now, we can add relatively sized children with FillMode.Fit to make sure their
                     // aspect ratio is preserved while still allowing them to fill vertically. This special case can not result
                     // in an autosize-related feedback loop, and we can thus simply allow it.
-                    if ((c.RelativeSizeAxes & AutoSizeAxes & toAxes(Direction)) != 0
+                    if ((c.RelativeSizeAxes & AutoSizeAxes & fillAxes) != 0
                         && (c.FillMode != FillMode.Fit || c.RelativeSizeAxes != Axes.Both || c.Size.X > RelativeChildSize.X
                             || c.Size.Y > RelativeChildSize.Y || AutoSizeAxes == Axes.Both))
                     {
@@ -173,14 +167,16 @@ namespace osu.Framework.Graphics.Containers
                             $"The fill flow container is set to flow in the {Direction} direction and autosize in {AutoSizeAxes} axes and the child is set to relative size in {c.RelativeSizeAxes} axes.");
                     }
 
+                    Vector2 cSpacingFactor = spacingFactor(c);
+
                     // Populate running variables with sane initial values.
                     if (i == 0)
                     {
                         size = c.BoundingBox.Size;
-                        rowBeginOffset = spacingFactor(c).X * size.X;
+                        rowBeginOffset = cSpacingFactor.X * size.X;
                     }
 
-                    float rowWidth = rowBeginOffset + current.X + (1 - spacingFactor(c).X) * size.X;
+                    float rowWidth = rowBeginOffset + current.X + (1 - cSpacingFactor.X) * size.X;
 
                     //We've exceeded our allowed width, move to a new row
                     if (direction != FillDirection.Horizontal && (Precision.DefinitelyBigger(rowWidth, max.X) || direction == FillDirection.Vertical))
@@ -191,7 +187,7 @@ namespace osu.Framework.Graphics.Containers
                         layoutPositions[i] = current;
 
                         rowOffsetsToMiddle.Add(0);
-                        rowBeginOffset = spacingFactor(c).X * size.X;
+                        rowBeginOffset = cSpacingFactor.X * size.X;
 
                         rowHeight = 0;
                     }
@@ -207,11 +203,11 @@ namespace osu.Framework.Graphics.Containers
                     rowIndices[i] = rowOffsetsToMiddle.Count - 1;
                     Vector2 stride = Vector2.Zero;
 
-                    if (i < children.Length - 1)
+                    if (i < childrenCount - 1)
                     {
                         // Compute stride. Note, that the stride depends on the origins of the drawables
                         // on both sides of the step to be taken.
-                        stride = (Vector2.One - spacingFactor(c)) * size;
+                        stride = (Vector2.One - cSpacingFactor) * size;
 
                         c = children[i + 1];
                         size = c.BoundingBox.Size;
@@ -226,13 +222,13 @@ namespace osu.Framework.Graphics.Containers
                     current.X += stride.X;
                 }
 
-                float height = layoutPositions[children.Length - 1].Y;
+                float height = layoutPositions[childrenCount - 1].Y;
 
                 Vector2 ourRelativeAnchor = children[0].RelativeAnchorPosition;
 
                 // Second pass, adjusting the positions for anchors of children.
                 // Uses rowWidths and height for centre-anchors.
-                for (int i = 0; i < children.Length; i++)
+                for (int i = 0; i < childrenCount; i++)
                 {
                     var c = children[i];
 

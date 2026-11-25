@@ -61,7 +61,9 @@ namespace osu.Framework.Graphics.Veldrid
         public GraphicsSurfaceType SurfaceType
             => veldridDevice.SurfaceType;
 
-        private readonly HashSet<IVeldridUniformBuffer> uniformBufferResetList = new HashSet<IVeldridUniformBuffer>();
+        private readonly List<IVeldridUniformBuffer> uniformBufferResetList = new List<IVeldridUniformBuffer>();
+        private int resetGeneration;
+        internal int ResetGeneration => resetGeneration;
 
         private VeldridDevice veldridDevice = null!;
         private GraphicsPipeline graphicsPipeline = null!;
@@ -86,8 +88,9 @@ namespace osu.Framework.Graphics.Veldrid
 
         protected internal override void BeginFrame(Vector2 windowSize)
         {
-            foreach (var ubo in uniformBufferResetList)
-                ubo.ResetCounters();
+            resetGeneration++;
+            for (int i = 0; i < uniformBufferResetList.Count; i++)
+                uniformBufferResetList[i].ResetCounters();
             uniformBufferResetList.Clear();
 
             veldridDevice.Resize(new Vector2I((int)windowSize.X, (int)windowSize.Y));

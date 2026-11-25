@@ -136,15 +136,18 @@ namespace osu.Framework.Audio
             throw new ArgumentException($"{nameof(AdjustableProperty)} \"{type}\" is missing mapping", nameof(type));
         }
 
+        private static readonly Func<double, double, double> multiply_aggregate = static (a, b) => a * b;
+        private static readonly Func<double, double, double> add_aggregate = static (a, b) => a + b;
+
         private Func<double, double, double> getAggregateFunction(AdjustableProperty type)
         {
             switch (type)
             {
                 default:
-                    return (a, b) => a * b;
+                    return multiply_aggregate;
 
                 case AdjustableProperty.Balance:
-                    return (a, b) => a + b;
+                    return add_aggregate;
             }
         }
     }

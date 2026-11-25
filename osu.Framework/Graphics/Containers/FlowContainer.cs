@@ -72,9 +72,14 @@ namespace osu.Framework.Graphics.Containers
         /// <summary>
         /// Invoked when layout should be invalidated.
         /// </summary>
-        protected internal void InvalidateLayout() => layout.Invalidate();
+        protected internal void InvalidateLayout()
+        {
+            layout.Invalidate();
+        }
 
         private readonly Dictionary<Drawable, float> layoutChildren = new Dictionary<Drawable, float>();
+        private readonly List<Drawable> flowingChildrenCache = new List<Drawable>();
+        private bool isPerformingLayout;
 
         protected override void AddInternal(Drawable drawable)
         {
@@ -157,7 +162,28 @@ namespace osu.Framework.Graphics.Containers
         /// <summary>
         /// Gets the children that appear in the flow of this <see cref="FlowContainer{T}"/> in the order in which they are processed within the flowing layout.
         /// </summary>
-        public virtual IEnumerable<Drawable> FlowingChildren => AliveInternalChildren.Where(d => d.IsPresent).OrderBy(d => layoutChildren[d]).ThenBy(d => d.ChildID);
+        public virtual IEnumerable<Drawable> FlowingChildren => isPerformingLayout ? flowingChildrenCache : rebuildFlowingChildren();
+
+        private List<Drawable> rebuildFlowingChildren()
+        {
+            flowingChildrenCache.Clear();
+
+            for (int i = 0; i < AliveInternalChildren.Count; i++)
+            {
+                Drawable d = AliveInternalChildren[i];
+                if (d.IsPresent)
+                    flowingChildrenCache.Add(d);
+            }
+
+            flowingChildrenCache.Sort(compareFlowingChildren);
+            return flowingChildrenCache;
+        }
+
+        private int compareFlowingChildren(Drawable a, Drawable b)
+        {
+            int c = layoutChildren[a].CompareTo(layoutChildren[b]);
+            return c != 0 ? c : a.ChildID.CompareTo(b.ChildID);
+        }
 
         protected abstract IEnumerable<Vector2> ComputeLayoutPositions();
 
@@ -165,52 +191,71 @@ namespace osu.Framework.Graphics.Containers
         {
             OnLayout?.Invoke();
 
-            if (!Children.Any())
+            if (Children.Count == 0)
                 return;
 
-            int processedCount = 0;
+            rebuildFlowingChildren();
+            isPerformingLayout = true;
 
-            using (IEnumerator<Vector2> positionEnumerator = ComputeLayoutPositions().GetEnumerator())
-            using (IEnumerator<Drawable> drawableEnumerator = FlowingChildren.GetEnumerator())
+            try
             {
-                while (true)
+                int processedCount = 0;
+
+                using (IEnumerator<Vector2> positionEnumerator = ComputeLayoutPositions().GetEnumerator())
+                using (IEnumerator<Drawable> drawableEnumerator = FlowingChildren.GetEnumerator())
                 {
-                    bool nextPos = positionEnumerator.MoveNext();
-                    bool nextDrawable = drawableEnumerator.MoveNext();
-
-                    if (nextPos != nextDrawable)
+                    while (true)
                     {
-                        throw new InvalidOperationException(
-                            $"{GetType().FullName}.{nameof(ComputeLayoutPositions)} returned a total of {processedCount} positions for {FlowingChildren.Count()} children. {nameof(ComputeLayoutPositions)} must return 1 position per child.");
-                    }
+                        bool nextPos = positionEnumerator.MoveNext();
+                        bool nextDrawable = drawableEnumerator.MoveNext();
 
-                    // at this point we only need to check one of the two iterators (due to the conditional directly above).
-                    if (!nextPos)
-                        return;
+                        if (nextPos != nextDrawable)
+                        {
+                            throw new InvalidOperationException(
+                                $"{GetType().FullName}.{nameof(ComputeLayoutPositions)} returned a total of {processedCount} positions for {FlowingChildren.Count()} children. {nameof(ComputeLayoutPositions)} must return 1 position per child.");
+                        }
 
-                    var drawable = drawableEnumerator.Current;
-                    var pos = positionEnumerator.Current;
+                        // at this point we only need to check one of the two iterators (due to the conditional directly above).
+                        if (!nextPos)
+                            return;
 
-                    processedCount++;
+                        var drawable = drawableEnumerator.Current;
+                        var pos = positionEnumerator.Current;
 
-                    Debug.Assert(drawable != null);
+                        processedCount++;
 
-                    if (drawable.RelativePositionAxes != Axes.None)
-                        throw new InvalidOperationException($"A flow container cannot contain a child with relative positioning (it is {drawable.RelativePositionAxes}).");
+                        Debug.Assert(drawable != null);
 
-                    var existingTransform = drawable.TransformsForTargetMember(FlowTransform.TARGET_MEMBER).FirstOrDefault(x => x is FlowTransform) as FlowTransform;
-                    Vector2 currentTargetPos = existingTransform?.EndValue ?? drawable.Position;
+                        if (drawable.RelativePositionAxes != Axes.None)
+                            throw new InvalidOperationException($"A flow container cannot contain a child with relative positioning (it is {drawable.RelativePositionAxes}).");
 
-                    if (Precision.AlmostEquals(currentTargetPos, pos)) continue;
+                        FlowTransform existingTransform = null;
+                        foreach (Transform t in drawable.TransformsForTargetMember(FlowTransform.TARGET_MEMBER))
+                        {
+                            if (t is FlowTransform ft)
+                            {
+                                existingTransform = ft;
+                                break;
+                            }
+                        }
 
-                    if (LayoutDuration > 0)
-                        drawable.TransformTo(drawable.PopulateTransform(new FlowTransform { Rewindable = false }, pos, LayoutDuration, LayoutEasing));
-                    else
-                    {
-                        if (existingTransform != null) drawable.ClearTransforms(false, FlowTransform.TARGET_MEMBER);
-                        drawable.Position = pos;
+                        Vector2 currentTargetPos = existingTransform?.EndValue ?? drawable.Position;
+
+                        if (Precision.AlmostEquals(currentTargetPos, pos)) continue;
+
+                        if (LayoutDuration > 0)
+                            drawable.TransformTo(drawable.PopulateTransform(new FlowTransform { Rewindable = false }, pos, LayoutDuration, LayoutEasing));
+                        else
+                        {
+                            if (existingTransform != null) drawable.ClearTransforms(false, FlowTransform.TARGET_MEMBER);
+                            drawable.Position = pos;
+                        }
                     }
                 }
+            }
+            finally
+            {
+                isPerformingLayout = false;
             }
         }
 

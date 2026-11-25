@@ -30,7 +30,23 @@ namespace osu.Framework.Graphics.Veldrid.Batches
         /// </summary>
         private readonly List<IVeldridVertexBuffer<T>>[] vertexBuffers = new List<IVeldridVertexBuffer<T>>[FrameworkEnvironment.VertexBufferCount ?? vertex_buffer_count];
 
-        private List<IVeldridVertexBuffer<T>> currentVertexBuffers => vertexBuffers[renderer.FrameIndex % (ulong)vertexBuffers.Length];
+        private ulong cachedFrameIndex = ulong.MaxValue;
+        private List<IVeldridVertexBuffer<T>>? cachedFrameBuffers;
+
+        private List<IVeldridVertexBuffer<T>> currentVertexBuffers
+        {
+            get
+            {
+                ulong frameIndex = renderer.FrameIndex;
+                if (frameIndex != cachedFrameIndex)
+                {
+                    cachedFrameIndex = frameIndex;
+                    cachedFrameBuffers = vertexBuffers[frameIndex % (ulong)vertexBuffers.Length];
+                }
+
+                return cachedFrameBuffers!;
+            }
+        }
 
         /// <summary>
         /// The number of vertices in each VertexBuffer.
@@ -106,7 +122,8 @@ namespace osu.Framework.Graphics.Veldrid.Batches
         /// <param name="v">The vertex to add.</param>
         public void Add(T v)
         {
-            renderer.SetActiveBatch(this);
+            if (!ReferenceEquals(renderer.ActiveBatch, this))
+                renderer.SetActiveBatch(this);
 
             var buffers = currentVertexBuffers;
 
@@ -124,7 +141,9 @@ namespace osu.Framework.Graphics.Veldrid.Batches
             if (currentBufferIndex >= buffers.Count)
                 buffers.Add(CreateVertexBuffer(renderer));
 
-            if (buffers[currentBufferIndex].SetVertex(currentVertexIndex, v))
+            var buffer = buffers[currentBufferIndex];
+
+            if (buffer.SetVertex(currentVertexIndex, v))
             {
                 if (synchronisationBeginIndex == -1)
                     synchronisationBeginIndex = currentVertexIndex;

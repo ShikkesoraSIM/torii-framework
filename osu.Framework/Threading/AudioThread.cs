@@ -46,6 +46,7 @@ namespace osu.Framework.Threading
         };
 
         private readonly List<AudioManager> managers = new List<AudioManager>();
+        private AudioManager[] managersSnapshot = Array.Empty<AudioManager>();
 
         private static readonly HashSet<int> initialised_devices = new HashSet<int>();
 
@@ -58,35 +59,37 @@ namespace osu.Framework.Threading
             if (frameCount++ % 1000 == 0)
                 cpu_usage.Value = Bass.CPUUsage;
 
-            lock (managers)
-            {
-                for (int i = 0; i < managers.Count; i++)
-                {
-                    var m = managers[i];
-                    m.Update();
-                }
-            }
+            AudioManager[] currentManagers = System.Threading.Volatile.Read(ref managersSnapshot);
+            for (int i = 0; i < currentManagers.Length; i++)
+                currentManagers[i].Update();
 
             updateOutputLatency();
         }
 
         internal void RegisterManager(AudioManager manager)
         {
+            manager.GlobalMixerHandle.BindTo(globalMixerHandle);
+
             lock (managers)
             {
                 if (managers.Contains(manager))
+                {
+                    manager.GlobalMixerHandle.UnbindFrom(globalMixerHandle);
                     throw new InvalidOperationException($"{manager} was already registered");
+                }
 
                 managers.Add(manager);
+                System.Threading.Volatile.Write(ref managersSnapshot, managers.ToArray());
             }
-
-            manager.GlobalMixerHandle.BindTo(globalMixerHandle);
         }
 
         internal void UnregisterManager(AudioManager manager)
         {
             lock (managers)
+            {
                 managers.Remove(manager);
+                System.Threading.Volatile.Write(ref managersSnapshot, managers.ToArray());
+            }
 
             manager.GlobalMixerHandle.UnbindFrom(globalMixerHandle);
         }

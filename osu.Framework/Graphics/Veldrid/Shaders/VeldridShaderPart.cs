@@ -14,15 +14,28 @@ using osu.Framework.Graphics.Shaders;
 
 namespace osu.Framework.Graphics.Veldrid.Shaders
 {
-    internal class VeldridShaderPart : IShaderPart
+    internal partial class VeldridShaderPart : IShaderPart
     {
-        private static readonly Regex shader_input_pattern = new Regex(@"^\s*layout\s*\(\s*location\s*=\s*(-?\d+)\s*\)\s*in\s+((?:(?:lowp|mediump|highp)\s+)?\w+)\s+(\w+)\s*;", RegexOptions.Multiline);
+        [GeneratedRegex(@"^\s*layout\s*\(\s*location\s*=\s*(-?\d+)\s*\)\s*in\s+((?:(?:lowp|mediump|highp)\s+)?\w+)\s+(\w+)\s*;", RegexOptions.Multiline)]
+        private static partial Regex shaderInputPattern();
 
-        private static readonly Regex shader_output_pattern =
-            new Regex(@"^\s*layout\s*\(\s*location\s*=\s*(-?\d+)\s*\)\s*out\s+((?:(?:lowp|mediump|highp)\s+)?\w+)\s+(\w+)\s*;", RegexOptions.Multiline);
+        [GeneratedRegex(@"^\s*layout\s*\(\s*location\s*=\s*(-?\d+)\s*\)\s*out\s+((?:(?:lowp|mediump|highp)\s+)?\w+)\s+(\w+)\s*;", RegexOptions.Multiline)]
+        private static partial Regex shaderOutputPattern();
 
-        private static readonly Regex uniform_pattern = new Regex(@"^(\s*layout\s*\(.*)set\s*=\s*(-?\d)(.*\)\s*(?:(?:readonly\s*)?buffer|uniform))", RegexOptions.Multiline);
-        private static readonly Regex include_pattern = new Regex(@"^\s*#\s*include\s+[""<](.*)["">]");
+        [GeneratedRegex(@"^(\s*layout\s*\(.*)set\s*=\s*(-?\d)(.*\)\s*(?:(?:readonly\s*)?buffer|uniform))", RegexOptions.Multiline)]
+        private static partial Regex uniformPattern();
+
+        [GeneratedRegex(@"^\s*#\s*include\s+[""<](.*)["">]")]
+        private static partial Regex includePattern();
+
+        [GeneratedRegex(@"void main\((.*)\)")]
+        private static partial Regex mainPattern();
+
+        private static readonly Regex shader_input_pattern = shaderInputPattern();
+        private static readonly Regex shader_output_pattern = shaderOutputPattern();
+        private static readonly Regex uniform_pattern = uniformPattern();
+        private static readonly Regex include_pattern = includePattern();
+        private static readonly Regex main_pattern = mainPattern();
 
         public readonly ShaderPartType Type;
 
@@ -134,7 +147,7 @@ namespace osu.Framework.Graphics.Veldrid.Shaders
                     const string real_main_name = "__internal_real_main";
 
                     outputCode = outputCode.Replace("{{ real_main }}", real_main_name);
-                    output = Regex.Replace(output, @"void main\((.*)\)", $"void {real_main_name}()") + outputCode + '\n';
+                    output = main_pattern.Replace(output, $"void {real_main_name}()") + outputCode + '\n';
                 }
 
                 return output;

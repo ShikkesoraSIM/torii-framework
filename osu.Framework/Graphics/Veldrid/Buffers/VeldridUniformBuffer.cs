@@ -34,6 +34,7 @@ namespace osu.Framework.Graphics.Veldrid.Buffers
         private int currentStorageIndex;
         private bool hasPendingData;
         private TData data;
+        private int lastRegisteredGeneration = -1;
 
         private readonly VeldridRenderer renderer;
 
@@ -53,7 +54,12 @@ namespace osu.Framework.Graphics.Veldrid.Buffers
                 data = value;
                 hasPendingData = true;
 
-                renderer.RegisterUniformBufferForReset(this);
+                int generation = renderer.ResetGeneration;
+                if (lastRegisteredGeneration != generation)
+                {
+                    lastRegisteredGeneration = generation;
+                    renderer.RegisterUniformBufferForReset(this);
+                }
             }
         }
 
@@ -100,6 +106,7 @@ namespace osu.Framework.Graphics.Veldrid.Buffers
             currentStorageIndex = 0;
             data = default;
             hasPendingData = false;
+            lastRegisteredGeneration = -1;
         }
 
         ~VeldridUniformBuffer()

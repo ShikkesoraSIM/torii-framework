@@ -155,13 +155,21 @@ namespace osu.Framework.Graphics.Veldrid.Pipelines
                 {
                     void* srcPtr = data.ToPointer();
                     void* dstPtr = mappedData.Data.ToPointer();
+                    uint copyBytes = Math.Min(mappedData.RowPitch, (uint)rowLengthInBytes);
 
-                    for (int i = 0; i < height; i++)
+                    if (mappedData.RowPitch == (uint)rowLengthInBytes)
                     {
-                        Unsafe.CopyBlockUnaligned(dstPtr, srcPtr, mappedData.RowPitch);
+                        Unsafe.CopyBlockUnaligned(dstPtr, srcPtr, copyBytes * (uint)height);
+                    }
+                    else
+                    {
+                        for (int i = 0; i < height; i++)
+                        {
+                            Unsafe.CopyBlockUnaligned(dstPtr, srcPtr, copyBytes);
 
-                        srcPtr = Unsafe.Add<byte>(srcPtr, rowLengthInBytes);
-                        dstPtr = Unsafe.Add<byte>(dstPtr, (int)mappedData.RowPitch);
+                            srcPtr = Unsafe.Add<byte>(srcPtr, rowLengthInBytes);
+                            dstPtr = Unsafe.Add<byte>(dstPtr, (int)mappedData.RowPitch);
+                        }
                     }
                 }
                 finally

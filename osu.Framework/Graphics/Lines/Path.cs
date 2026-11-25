@@ -186,12 +186,15 @@ namespace osu.Framework.Graphics.Lines
                     float maxX = 0;
                     float maxY = 0;
 
-                    foreach (var v in vertices)
+                    float radius = PathRadius;
+
+                    for (int i = 0; i < vertices.Count; i++)
                     {
-                        minX = Math.Min(minX, v.X - PathRadius);
-                        minY = Math.Min(minY, v.Y - PathRadius);
-                        maxX = Math.Max(maxX, v.X + PathRadius);
-                        maxY = Math.Max(maxY, v.Y + PathRadius);
+                        Vector2 v = vertices[i];
+                        if (v.X - radius < minX) minX = v.X - radius;
+                        if (v.Y - radius < minY) minY = v.Y - radius;
+                        if (v.X + radius > maxX) maxX = v.X + radius;
+                        if (v.Y + radius > maxY) maxY = v.Y + radius;
                     }
 
                     return vertexBoundsCache.Value = new RectangleF(minX, minY, maxX - minX, maxY - minY);

@@ -1,5 +1,5 @@
-﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
-// See the LICENCE file in the repository root for full licence text.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh> & GooGuTeam. Licensed under the MIT Licence.
+// See the LICENCE & LICENCE-OSU file in the repository root for full licence text.
 
 using System;
 using System.Collections.Generic;
@@ -258,6 +258,7 @@ namespace osu.Framework.Graphics.Audio
             private Texture? texture;
 
             private List<Waveform.Point>? points;
+            private SRGBColour[] frequencyColours = Array.Empty<SRGBColour>();
 
             private Vector2 drawSize;
 
@@ -287,13 +288,19 @@ namespace osu.Framework.Graphics.Audio
                 texture = Source.texture;
                 drawSize = Source.DrawSize;
 
+                bool coloursChanged = baseColour != Source.baseColour
+                                      || lowColour != (Source.lowColour ?? Source.baseColour)
+                                      || midColour != (Source.midColour ?? Source.baseColour)
+                                      || highColour != (Source.highColour ?? Source.baseColour);
+                bool pointsChanged = Source.resampledVersion != version;
+
                 baseColour = Source.baseColour;
 
                 lowColour = Source.lowColour ?? baseColour;
                 midColour = Source.midColour ?? baseColour;
                 highColour = Source.highColour ?? baseColour;
 
-                if (Source.resampledVersion != version)
+                if (pointsChanged)
                 {
                     // Late initialise list to use a sane initial capacity.
                     if (points == null)
@@ -311,6 +318,22 @@ namespace osu.Framework.Graphics.Audio
                     lowMax = Source.resampledMaxLowIntensity;
 
                     version = Source.resampledVersion;
+                }
+
+                if ((pointsChanged || coloursChanged) && points != null)
+                {
+                    if (frequencyColours.Length != points.Count)
+                        frequencyColours = new SRGBColour[points.Count];
+
+                    for (int i = 0; i < points.Count; i++)
+                    {
+                        // The spectrum and palette do not change when the graph scrolls or fades.
+                        Color4 colour = baseColour;
+                        colour = Interpolation.ValueAt(points[i].MidIntensity / midMax, colour, midColour, 0, 1);
+                        colour = Interpolation.ValueAt(points[i].HighIntensity / highMax, colour, highColour, 0, 1);
+                        colour = Interpolation.ValueAt(points[i].LowIntensity / lowMax, colour, lowColour, 0, 1);
+                        frequencyColours[i] = colour;
+                    }
                 }
             }
 
@@ -347,17 +370,8 @@ namespace osu.Framework.Graphics.Audio
                     float leftX = i * separation;
                     float rightX = (i + 1) * separation;
 
-                    Color4 frequencyColour = baseColour;
-
-                    // colouring is applied in the order of interest to a viewer.
-                    frequencyColour = Interpolation.ValueAt(points[i].MidIntensity / midMax, frequencyColour, midColour, 0, 1);
-                    // high end (cymbal) can help find beat, so give it priority over mids.
-                    frequencyColour = Interpolation.ValueAt(points[i].HighIntensity / highMax, frequencyColour, highColour, 0, 1);
-                    // low end (bass drum) is generally the best visual aid for beat matching, so give it priority over high/mid.
-                    frequencyColour = Interpolation.ValueAt(points[i].LowIntensity / lowMax, frequencyColour, lowColour, 0, 1);
-
                     ColourInfo finalColour = DrawColourInfo.Colour;
-                    finalColour.ApplyChild(frequencyColour);
+                    finalColour.ApplyChild(frequencyColours[i]);
 
                     float height = drawSize.Y / 2;
 
@@ -370,8 +384,9 @@ namespace osu.Framework.Graphics.Audio
 
                     quadToDraw *= DrawInfo.Matrix;
 
-                    if (quadToDraw.Size.X != 0 && quadToDraw.Size.Y != 0)
-                        renderer.DrawQuad(texture, quadToDraw, finalColour, null, vertexBatch.AddAction, Vector2.Divide(localInflationAmount, quadToDraw.Size));
+                    Vector2 quadSize = quadToDraw.Size;
+                    if (quadSize.X != 0 && quadSize.Y != 0)
+                        renderer.DrawQuad(texture, quadToDraw, finalColour, null, vertexBatch.AddAction, Vector2.Divide(localInflationAmount, quadSize));
                 }
 
                 shader.Unbind();

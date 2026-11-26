@@ -4,7 +4,6 @@
 #nullable disable
 
 using System.Diagnostics;
-using ManagedBass;
 using osu.Framework.Allocation;
 using osu.Framework.Audio;
 using osu.Framework.Audio.Mixing;

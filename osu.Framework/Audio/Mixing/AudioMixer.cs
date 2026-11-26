@@ -1,7 +1,6 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-using ManagedBass;
 using osu.Framework.Extensions.ObjectExtensions;
 
 namespace osu.Framework.Audio.Mixing
@@ -15,12 +14,6 @@ namespace osu.Framework.Audio.Mixing
 
         private readonly AudioMixer? fallbackMixer;
 
-        /// <summary>
-        /// Creates a new <see cref="AudioMixer"/>.
-        /// </summary>
-        /// <param name="fallbackMixer">A fallback <see cref="AudioMixer"/>, which <see cref="IAudioChannel"/>s are moved to if removed from this one.
-        /// A <c>null</c> value indicates this is the fallback <see cref="AudioMixer"/>.</param>
-        /// <param name="identifier">An identifier displayed on the audio mixer visualiser.</param>
         protected AudioMixer(AudioMixer? fallbackMixer, string identifier)
         {
             this.fallbackMixer = fallbackMixer;
@@ -51,11 +44,6 @@ namespace osu.Framework.Audio.Mixing
 
         public abstract void UpdateEffect(IEffectParameter effect);
 
-        /// <summary>
-        /// Removes an <see cref="IAudioChannel"/> from the mix.
-        /// </summary>
-        /// <param name="channel">The <see cref="IAudioChannel"/> to remove.</param>
-        /// <param name="returnToDefault">Whether <paramref name="channel"/> should be returned to the default mixer.</param>
         protected void Remove(IAudioChannel channel, bool returnToDefault)
         {
             // If this is the default mixer, prevent removal.
@@ -76,16 +64,8 @@ namespace osu.Framework.Audio.Mixing
             });
         }
 
-        /// <summary>
-        /// Adds an <see cref="IAudioChannel"/> to the mix.
-        /// </summary>
-        /// <param name="channel">The <see cref="IAudioChannel"/> to add.</param>
         protected abstract void AddInternal(IAudioChannel channel);
 
-        /// <summary>
-        /// Removes an <see cref="IAudioChannel"/> from the mix.
-        /// </summary>
-        /// <param name="channel">The <see cref="IAudioChannel"/> to remove.</param>
         protected abstract void RemoveInternal(IAudioChannel channel);
     }
 }

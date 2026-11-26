@@ -4,11 +4,11 @@
 #nullable disable
 
 using System;
+using System.Linq;
 using System.Threading;
-using ManagedBass;
-using ManagedBass.Mix;
 using NUnit.Framework;
 using osu.Framework.Audio.Mixing.Bass;
+using osu.Framework.Audio.Native;
 using osu.Framework.Audio.Sample;
 using osu.Framework.Audio.Track;
 using osu.Framework.Extensions;
@@ -47,7 +47,7 @@ namespace osu.Framework.Tests.Audio
         [Test]
         public void TestAddedToGlobalMixerByDefault()
         {
-            Assert.That(BassMix.ChannelGetMixer(getHandle()), Is.EqualTo(bass.Mixer.Handle));
+            Assert.That(bass.Mixer.GetChannelHandles(), Does.Contain(getHandle()));
         }
 
         [Test]
@@ -56,7 +56,7 @@ namespace osu.Framework.Tests.Audio
             bass.Mixer.Remove(track);
             bass.Update();
 
-            Assert.That(BassMix.ChannelGetMixer(getHandle()), Is.EqualTo(bass.Mixer.Handle));
+            Assert.That(bass.Mixer.GetChannelHandles(), Does.Contain(getHandle()));
         }
 
         [Test]
@@ -67,12 +67,12 @@ namespace osu.Framework.Tests.Audio
             secondMixer.Add(track);
             bass.Update();
 
-            Assert.That(BassMix.ChannelGetMixer(getHandle()), Is.EqualTo(secondMixer.Handle));
+            Assert.That(secondMixer.GetChannelHandles(), Does.Contain(getHandle()));
 
             bass.Mixer.Add(track);
             bass.Update();
 
-            Assert.That(BassMix.ChannelGetMixer(getHandle()), Is.EqualTo(bass.Mixer.Handle));
+            Assert.That(bass.Mixer.GetChannelHandles(), Does.Contain(getHandle()));
         }
 
         [Test]
@@ -84,7 +84,7 @@ namespace osu.Framework.Tests.Audio
             secondMixer.Remove(track);
             bass.Update();
 
-            Assert.That(BassMix.ChannelGetMixer(getHandle()), Is.EqualTo(bass.Mixer.Handle));
+            Assert.That(bass.Mixer.GetChannelHandles(), Does.Contain(getHandle()));
         }
 
         [Test]
@@ -103,10 +103,11 @@ namespace osu.Framework.Tests.Audio
         [Test]
         public void TestFreedChannelRemovedFromDefault()
         {
+            int h = getHandle();
             track.Dispose();
             bass.Update();
 
-            Assert.That(BassMix.ChannelGetMixer(getHandle()), Is.Zero);
+            Assert.That(bass.Mixer.GetChannelHandles(), Does.Not.Contain(h));
         }
 
         [Test]
@@ -120,7 +121,7 @@ namespace osu.Framework.Tests.Audio
             secondMixer.Dispose();
             bass.Update();
 
-            Assert.That(BassMix.ChannelGetMixer(getHandle()), Is.EqualTo(bass.Mixer.Handle));
+            Assert.That(bass.Mixer.GetChannelHandles(), Does.Contain(getHandle()));
         }
 
         [Test]
@@ -237,12 +238,12 @@ namespace osu.Framework.Tests.Audio
             Thread.Sleep(50);
             bass.Update();
 
-            Assert.That(bass.Mixer.ChannelIsActive(track), Is.Not.EqualTo(PlaybackState.Playing));
+            Assert.That(bass.Mixer.ChannelIsActive(track), Is.Not.EqualTo(TaChannelState.Playing));
 
             bass.RunOnAudioThread(() => track.SeekAsync(0).WaitSafely());
             bass.Update();
 
-            Assert.That(bass.Mixer.ChannelIsActive(track), Is.Not.EqualTo(PlaybackState.Playing));
+            Assert.That(bass.Mixer.ChannelIsActive(track), Is.Not.EqualTo(TaChannelState.Playing));
         }
 
         [Test]
@@ -257,13 +258,13 @@ namespace osu.Framework.Tests.Audio
             Thread.Sleep(50);
             bass.Update();
 
-            Assert.That(bass.Mixer.ChannelIsActive(track), Is.Not.EqualTo(PlaybackState.Playing));
+            Assert.That(bass.Mixer.ChannelIsActive(track), Is.Not.EqualTo(TaChannelState.Playing));
 
             var secondMixer = bass.CreateMixer();
             secondMixer.Add(track);
             bass.Update();
 
-            Assert.That(secondMixer.ChannelIsActive(track), Is.Not.EqualTo(PlaybackState.Playing));
+            Assert.That(secondMixer.ChannelIsActive(track), Is.Not.EqualTo(TaChannelState.Playing));
         }
 
         private int getHandle() => ((IBassAudioChannel)track).Handle;

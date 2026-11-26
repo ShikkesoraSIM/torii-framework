@@ -2,8 +2,8 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
-using ManagedBass;
 using osu.Framework.Audio.Mixing.Bass;
+using osu.Framework.Audio.Native;
 using osu.Framework.Audio.Track;
 using osu.Framework.Extensions.ObjectExtensions;
 
@@ -13,19 +13,12 @@ namespace osu.Framework.Audio.Sample
     {
         private readonly SampleBass sample;
         private volatile int channel;
+        private bool hasStartedOnce;
 
-        /// <summary>
-        /// Whether the channel is currently playing.
-        /// </summary>
-        /// <remarks>
-        /// This is set to <c>true</c> immediately upon <see cref="Play"/>, but the channel may not be audibly playing yet.
-        /// </remarks>
         public override bool Playing
         {
             get
             {
-                // When short samples loop (especially within mixers), there's a small window where the ChannelIsActive state could be Stopped.
-                // In order to not provide a "stale" value here, we'll not trust the internal playing state from BASS.
                 if (Looping && userRequestedPlay)
                     return true;
 
@@ -34,16 +27,7 @@ namespace osu.Framework.Audio.Sample
         }
 
         private volatile bool playing;
-
-        /// <summary>
-        /// <c>true</c> if the user last called <see cref="Play"/>.
-        /// <c>false</c> if the user last called <see cref="Stop"/>.
-        /// </summary>
         private volatile bool userRequestedPlay;
-
-        /// <summary>
-        /// Whether the playback start has been enqueued.
-        /// </summary>
         private volatile bool enqueuedPlaybackStart;
 
         public override bool Looping
@@ -52,7 +36,7 @@ namespace osu.Framework.Audio.Sample
             set
             {
                 base.Looping = value;
-                setLoopFlag(Looping);
+                EnqueueAction(pushParamsToNative);
             }
         }
 
@@ -60,29 +44,12 @@ namespace osu.Framework.Audio.Sample
 
         public override ChannelAmplitudes CurrentAmplitudes => (bassAmplitudeProcessor ??= new BassAmplitudeProcessor(this)).CurrentAmplitudes;
 
-        private readonly BassRelativeFrequencyHandler relativeFrequencyHandler;
         private BassAmplitudeProcessor? bassAmplitudeProcessor;
 
-        /// <summary>
-        /// Creates a new <see cref="SampleChannelBass"/>.
-        /// </summary>
-        /// <param name="sample">The <see cref="SampleBass"/> to create the channel from.</param>
         public SampleChannelBass(SampleBass sample)
             : base(sample.Name)
         {
             this.sample = sample;
-
-            relativeFrequencyHandler = new BassRelativeFrequencyHandler
-            {
-                FrequencyChangedToZero = stopInternal,
-                FrequencyChangedFromZero = () =>
-                {
-                    // Only unpause if the channel has been played by the user.
-                    if (userRequestedPlay)
-                        playInternal();
-                },
-            };
-
             ensureChannel();
         }
 
@@ -90,43 +57,25 @@ namespace osu.Framework.Audio.Sample
         {
             if (hasChannel)
             {
-                switch (bassMixer.ChannelIsActive(this))
-                {
-                    case PlaybackState.Playing:
-                    // Stalled counts as playing, as playback will continue once more data has streamed in.
-                    case PlaybackState.Stalled:
-                    // The channel is in a "paused" state via zero-frequency. It should be marked as playing even if it's in a paused state internally.
-                    case PlaybackState.Paused when userRequestedPlay:
-                        playing = true;
-                        break;
-
-                    default:
-                        playing = false;
-                        break;
-                }
+                var state = (TaChannelState)ToriiAudioNative.ta_sample_channel_get_state(ToriiAudioEngine.Handle, channel);
+                playing = state == TaChannelState.Playing || (state == TaChannelState.Paused && userRequestedPlay);
             }
             else
             {
-                // Channel doesn't exist - a rare case occurring as a result of device updates.
                 playing = false;
             }
 
             base.UpdateState();
-
             bassAmplitudeProcessor?.Update();
         }
 
         public override void Play()
         {
-            // Check if this channel is disposed first to not set enqueuedPlaybackStart to true, as it makes Playing true.
             ObjectDisposedException.ThrowIf(IsDisposed, this);
 
             userRequestedPlay = true;
-
-            // Pin Playing and IsAlive to true so that the channel isn't killed by the next update. This is only reset after playback is started.
             enqueuedPlaybackStart = true;
 
-            // Bring this channel alive, allowing it to receive updates.
             base.Play();
 
             EnqueueAction(() =>
@@ -154,71 +103,66 @@ namespace osu.Framework.Audio.Sample
         internal override void OnStateChanged()
         {
             base.OnStateChanged();
+            pushParamsToNative();
+        }
 
+        private void pushParamsToNative()
+        {
             if (!hasChannel)
                 return;
 
-            Bass.ChannelSetAttribute(channel, ChannelAttribute.Volume, AggregateVolume.Value);
-            Bass.ChannelSetAttribute(channel, ChannelAttribute.Pan, AggregateBalance.Value);
-            relativeFrequencyHandler.SetFrequency(AggregateFrequency.Value);
+            ToriiAudioNative.ta_sample_channel_set_params(
+                ToriiAudioEngine.Handle,
+                channel,
+                (float)AggregateVolume.Value,
+                (float)AggregateBalance.Value,
+                AggregateFrequency.Value,
+                Looping ? 1 : 0);
         }
 
         private bool playInternal()
         {
-            // Channel may have been freed via UpdateDevice().
             ensureChannel();
 
             if (!hasChannel)
                 return false;
 
-            // Ensure state is correct before starting.
             InvalidateState();
 
-            // Bass will restart the sample if it has reached its end. This behavior isn't desirable so block locally.
-            // Unlike TrackBass, sample channels can't have sync callbacks attached, so the stopped state is used instead
-            // to indicate the natural stoppage of a sample as a result of having reaching the end.
-            if (Played && bassMixer.ChannelIsActive(this) == PlaybackState.Stopped)
+            // Do not restart a sample channel that has already played and finished naturally.
+            if (hasStartedOnce && (TaChannelState)ToriiAudioNative.ta_sample_channel_get_state(ToriiAudioEngine.Handle, channel) == TaChannelState.Stopped)
                 return false;
 
-            if (relativeFrequencyHandler.IsFrequencyZero)
-                return true;
+            pushParamsToNative();
 
-            return bassMixer.ChannelPlay(this);
+            if (Mixer is BassAudioMixer bm)
+                bm.ChannelPlay(this);
+
+            hasStartedOnce = true;
+            return ToriiAudioNative.ta_sample_channel_play(ToriiAudioEngine.Handle, channel) != 0;
         }
 
         private void stopInternal()
         {
             if (hasChannel)
-                bassMixer.ChannelPause(this);
+                ToriiAudioNative.ta_sample_channel_stop(ToriiAudioEngine.Handle, channel);
         }
-
-        private void setLoopFlag(bool value) => EnqueueAction(() =>
-        {
-            if (hasChannel)
-                Bass.ChannelFlags(channel, value ? BassFlags.Loop : BassFlags.Default, BassFlags.Loop);
-        });
 
         private void ensureChannel() => EnqueueAction(() =>
         {
-            if (hasChannel)
+            if (hasChannel || sample.SampleId == 0)
                 return;
 
-            BassFlags flags = BassFlags.SampleChannelStream | BassFlags.Decode;
-
-            // While this shouldn't cause issues, we've had a small subset of users reporting issues on windows.
-            // To keep things working let's only apply to other platforms until we know more.
-            // See https://github.com/ppy/osu/issues/18652.
-            if (RuntimeInfo.OS != RuntimeInfo.Platform.Windows)
-                flags |= BassFlags.AsyncFile;
-
-            channel = Bass.SampleGetChannel(sample.SampleId, flags);
+            int mixerHandle = Mixer is BassAudioMixer bm ? bm.Handle : 0;
+            channel = ToriiAudioNative.ta_sample_channel_create(ToriiAudioEngine.Handle, sample.SampleId, mixerHandle);
 
             if (!hasChannel)
                 return;
 
-            setLoopFlag(Looping);
+            pushParamsToNative();
 
-            relativeFrequencyHandler.SetChannel(channel);
+            if (Mixer is BassAudioMixer mixer)
+                mixer.AddChannelToBassMix(this);
         });
 
         #region Mixing
@@ -242,7 +186,9 @@ namespace osu.Framework.Audio.Sample
 
             if (hasChannel)
             {
-                bassMixer.StreamFree(this);
+                if (Mixer is BassAudioMixer bm)
+                    bm.StreamFree(this);
+                ToriiAudioNative.ta_sample_channel_destroy(ToriiAudioEngine.Handle, channel);
                 channel = 0;
             }
 

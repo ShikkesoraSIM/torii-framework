@@ -1,0 +1,26 @@
+Font Awesome 5 Free
+===================
+
+Copyright (c) Fonticons, Inc.
+https://fontawesome.com
+
+This project includes Font Awesome 5 Free, which is distributed under the
+following licenses:
+
+1. Icons (SVG, font glyphs, and related artwork)
+   License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+   https://creativecommons.org/licenses/by/4.0/
+
+2. Fonts (the Font Awesome font files themselves)
+   License: SIL Open Font License 1.1 (SIL OFL 1.1)
+   https://scripts.sil.org/OFL
+
+3. Code (CSS, JavaScript, and other source code)
+   License: MIT License
+   https://opensource.org/licenses/MIT
+
+Attribution:
+  Font Awesome 5 Free by Fonticons, Inc. (https://fontawesome.com)
+  Licensed under CC BY 4.0 (icons), SIL OFL 1.1 (fonts), and MIT (code).
+
+Full license texts are available at the URLs listed above.

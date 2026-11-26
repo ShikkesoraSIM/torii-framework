@@ -2,7 +2,6 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System.Linq;
-using ManagedBass.Mix;
 using osu.Framework.Audio.Mixing;
 using osu.Framework.Audio.Mixing.Bass;
 using osu.Framework.Extensions.Color4Extensions;
@@ -99,10 +98,7 @@ namespace osu.Framework.Graphics.Visualisation.Audio
             if (!(Mixer is BassAudioMixer bassMixer))
                 return;
 
-            int[] channels = BassMix.MixerGetChannels(bassMixer.Handle);
-
-            if (channels == null)
-                return;
+            int[] channels = bassMixer.GetChannelHandles();
 
             foreach (int channel in channels)
             {

@@ -2,9 +2,9 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
-using ManagedBass;
 using osu.Framework.Audio;
 using osu.Framework.Audio.Mixing.Bass;
+using osu.Framework.Audio.Native;
 using osu.Framework.Audio.Sample;
 using osu.Framework.Audio.Track;
 using osu.Framework.IO.Stores;
@@ -13,7 +13,7 @@ using osu.Framework.Threading;
 namespace osu.Framework.Tests.Audio
 {
     /// <summary>
-    /// Provides a BASS audio pipeline to be used for testing audio components.
+    /// Provides a <c>torii_audio</c> NoSound pipeline for testing audio components deterministically.
     /// </summary>
     public class BassTestComponents : IDisposable
     {
@@ -40,15 +40,14 @@ namespace osu.Framework.Tests.Audio
             Add(TrackStore, SampleStore);
         }
 
-        public void UpdateDevice() => allComponents.UpdateDevice(-1);
+        public void UpdateDevice() => allComponents.UpdateDevice(ToriiAudioEngine.NO_SOUND_DEVICE);
 
         public void Init()
         {
             AudioThread.PreloadBass();
 
-            // Initialize bass with no audio to make sure the test remains consistent even if there is no audio device.
-            Bass.Configure(ManagedBass.Configuration.UpdatePeriod, 5);
-            Bass.Init(0);
+            // Initialize torii_audio in NoSound mode so tests are 100% deterministic without audio hardware.
+            ToriiAudioEngine.InitNoSound();
         }
 
         public void Add(params AudioComponent[] component)
@@ -69,10 +68,6 @@ namespace osu.Framework.Tests.Audio
             RunOnAudioThread(() => allComponents.Update());
         }
 
-        /// <summary>
-        /// Runs an <paramref name="action"/> on a newly created audio thread, and blocks until it has been run to completion.
-        /// </summary>
-        /// <param name="action">The action to run on the audio thread.</param>
         public void RunOnAudioThread(Action action) => AudioTestHelper.RunOnAudioThread(action);
 
         internal TrackBass GetTrack() => (TrackBass)TrackStore.Get("Resources.Tracks.sample-track.mp3");
@@ -81,8 +76,9 @@ namespace osu.Framework.Tests.Audio
         public void Dispose() => RunOnAudioThread(() =>
         {
             allComponents.Dispose();
-            allComponents.Update(); // Actually runs the disposal.
-            Bass.Free();
+            allComponents.Update();
+            ToriiAudioNative.ta_device_free(ToriiAudioEngine.Handle);
+            ToriiAudioEngine.CurrentDevice = ToriiAudioEngine.UNINITIALISED_DEVICE;
         });
     }
 }

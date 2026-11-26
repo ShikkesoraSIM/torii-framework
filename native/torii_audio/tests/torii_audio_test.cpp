@@ -49,7 +49,7 @@ static std::vector<uint8_t> makeSineWav(int sampleRate, double seconds, double f
     return out;
 }
 
-int main() {
+int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     printf("=== torii_audio Native Verification Suite ===\n");
 
@@ -180,8 +180,10 @@ int main() {
     testProbe("test-sample-cut.mp3", TA_FORMAT_MP3, 1);
     testProbe("test-sample.ogg", TA_FORMAT_OGG, 1);
 
-    // 7. Live Windows WASAPI Low-Latency Shared (IAudioClient3) + Exclusive probe
-    if (dev_count > 0) {
+    // 7. Live Windows WASAPI probe (opt-in via --live ONLY, and muted/stopped so it never blasts speakers!)
+    if (dev_count > 0 && argc > 1 && std::strcmp(argv[1], "--live") == 0) {
+        ta_track_pause(eng, trk, 1);
+        for (int32_t ch : chs) ta_sample_channel_stop(eng, ch);
         rc = ta_device_init(eng, 1, TA_MODE_LOW_LATENCY_SHARED, 0.0, 0, &caps, err, sizeof(err));
         printf("[7a] Live WASAPI Shared (IAudioClient3) -> rc=%d backend=%s %dHz %dch period=%.2fms latency=%.2fms err='%s'\n",
                rc, caps.backend_name, caps.sample_rate, caps.channels, caps.active_period_ms, caps.output_latency_ms, err);

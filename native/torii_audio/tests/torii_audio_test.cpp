@@ -180,14 +180,24 @@ int main() {
     testProbe("test-sample-cut.mp3", TA_FORMAT_MP3, 1);
     testProbe("test-sample.ogg", TA_FORMAT_OGG, 1);
 
-    // 7. Live Windows WASAPI Low-Latency Shared probe
+    // 7. Live Windows WASAPI Low-Latency Shared (IAudioClient3) + Exclusive probe
     if (dev_count > 0) {
         rc = ta_device_init(eng, 1, TA_MODE_LOW_LATENCY_SHARED, 0.0, 0, &caps, err, sizeof(err));
-        printf("[7] Live WASAPI Shared init -> rc=%d backend=%s %dHz %dch period=%.2fms latency=%.2fms err='%s'\n",
+        printf("[7a] Live WASAPI Shared (IAudioClient3) -> rc=%d backend=%s %dHz %dch period=%.2fms latency=%.2fms err='%s'\n",
                rc, caps.backend_name, caps.sample_rate, caps.channels, caps.active_period_ms, caps.output_latency_ms, err);
         CHECK(rc == TA_OK);
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        printf("    Live measured latency=%.2fms CPU=%.2f%%\n", ta_get_output_latency_ms(eng), ta_get_cpu_usage(eng));
+        printf("     Live Shared measured latency=%.2fms CPU=%.2f%%\n", ta_get_output_latency_ms(eng), ta_get_cpu_usage(eng));
+
+        rc = ta_device_init(eng, 1, TA_MODE_EXCLUSIVE, 0.0, 0, &caps, err, sizeof(err));
+        printf("[7b] Live WASAPI Exclusive -> rc=%d backend=%s %dHz %dch %s%d period=%.2fms latency=%.2fms err='%s'\n",
+               rc, caps.backend_name, caps.sample_rate, caps.channels,
+               caps.is_float_output ? "f" : "i", caps.bit_depth,
+               caps.active_period_ms, caps.output_latency_ms, err);
+        if (rc == TA_OK) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            printf("     Live Exclusive measured latency=%.2fms CPU=%.2f%%\n", ta_get_output_latency_ms(eng), ta_get_cpu_usage(eng));
+        }
     }
 
     for (int32_t ch : chs) ta_sample_channel_destroy(eng, ch);

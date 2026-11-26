@@ -444,4 +444,49 @@ TA_API void ta_waveform_free(ta_waveform_result* result) {
     result->channels = 0;
 }
 
+TA_API int32_t ta_decode_memory_f32(const uint8_t* data, size_t len, float** out_pcm, int64_t* out_frames, int32_t* out_sample_rate, int32_t* out_channels) {
+    if (!data || len < 4 || !out_pcm || !out_frames || !out_sample_rate || !out_channels)
+        return 0;
+    *out_pcm = nullptr;
+    *out_frames = 0;
+    *out_sample_rate = 0;
+    *out_channels = 0;
+
+    int32_t fmt = torii_audio::sniffFormatFromBytes(data, len);
+    if (fmt == TA_FORMAT_UNKNOWN)
+        return 0;
+
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
+    cfg.encodingFormat = torii_audio::toMaEncoding(fmt);
+    ma_decoder dec;
+    if (ma_decoder_init_memory(data, len, &cfg, &dec) != MA_SUCCESS)
+        return 0;
+
+    const int32_t sr = static_cast<int32_t>(dec.outputSampleRate);
+    const int32_t ch = static_cast<int32_t>(dec.outputChannels);
+    std::vector<float> pcm;
+    std::vector<float> chunk(4096 * std::max(1, ch));
+    ma_uint64 read = 0;
+    while (ma_decoder_read_pcm_frames(&dec, chunk.data(), 4096, &read) == MA_SUCCESS && read > 0) {
+        pcm.insert(pcm.end(), chunk.data(), chunk.data() + read * ch);
+    }
+    ma_decoder_uninit(&dec);
+
+    float* buf = static_cast<float*>(std::malloc(pcm.size() * sizeof(float)));
+    if (!buf && !pcm.empty())
+        return 0;
+    if (!pcm.empty())
+        std::memcpy(buf, pcm.data(), pcm.size() * sizeof(float));
+
+    *out_pcm = buf;
+    *out_frames = static_cast<int64_t>(pcm.size() / std::max(1, ch));
+    *out_sample_rate = sr;
+    *out_channels = ch;
+    return 1;
+}
+
+TA_API void ta_free_buffer(void* ptr) {
+    std::free(ptr);
+}
+
 } // extern "C"

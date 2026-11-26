@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -176,11 +177,23 @@ struct TrackSlot {
     float cur_gain_l = 1.0f;
     float cur_gain_r = 1.0f;
 
-    // Pre-allocated decode/resample/stretch scratch buffers (zero RT allocs!)
-    static constexpr size_t kDecBufFrames = 8192;
-    float dec_buf[kDecBufFrames * 2]{};
-    int64_t dec_buf_start_frame = -1;
-    int32_t dec_buf_valid_frames = 0;
+    // 4-page lock-free sliding PCM cache (4 x 16384 frames = ~1.48s @ 44.1kHz, 512 KB per track).
+    // Filled exclusively off the RT callback by ta_engine's background decode_thread (and synchronously
+    // warmed on ta_track_create / ta_track_seek_ms). RT callback NEVER touches ma_decoder!
+    static constexpr int32_t kNumPages = 4;
+    static constexpr int64_t kPageFrames = 16384;
+    struct DecodePage {
+        std::atomic<uint32_t> state{0};        // 0=Empty, 1=Writing, 2=Ready
+        std::atomic<int32_t> rt_readers{0};
+        std::atomic<int64_t> page_index{-1};   // frame_start / kPageFrames
+        int64_t start_frame = 0;
+        int32_t valid_frames = 0;
+        float pcm[kPageFrames * 2]{};
+    };
+    DecodePage pages[kNumPages];
+    std::mutex decoder_mutex;                  // Only locked by background decode_thread or control thread (NEVER RT!)
+    std::atomic<int64_t> rt_hint_frame{0};
+    std::atomic<int32_t> rt_hint_dir{1};
 
     // Signalsmith Stretch (pre-allocated at track creation, bypassed when tempo == 1.0)
     signalsmith::stretch::SignalsmithStretch<float> stretcher;
@@ -199,46 +212,109 @@ struct TrackSlot {
     AnalysisRing analysis;
 
     void resetDecoderCache() noexcept {
-        dec_buf_start_frame = -1;
-        dec_buf_valid_frames = 0;
+        for (int i = 0; i < kNumPages; ++i) {
+            pages[i].state.store(0, std::memory_order_release);
+            pages[i].page_index.store(-1, std::memory_order_release);
+            pages[i].valid_frames = 0;
+        }
     }
 
-    bool ensureFramesDecoded(int64_t start_frame, int32_t count) noexcept {
-        if (!decoder_valid || total_frames <= 0 || count <= 0)
+    // Called ONLY on background decode_thread or control thread (never RT audio callback!)
+    bool decodePageLocked(int64_t target_page_idx, int64_t current_rt_page) noexcept {
+        if (!decoder_valid || total_frames <= 0 || target_page_idx < 0)
             return false;
-        if (start_frame < 0)
-            start_frame = 0;
-        if (start_frame >= total_frames)
+        int64_t start_f = target_page_idx * kPageFrames;
+        if (start_f >= total_frames)
             return false;
 
-        if (dec_buf_start_frame >= 0 &&
-            start_frame >= dec_buf_start_frame &&
-            start_frame + count <= dec_buf_start_frame + dec_buf_valid_frames) {
-            return true;
+        // Already cached?
+        for (int i = 0; i < kNumPages; ++i) {
+            if (pages[i].state.load(std::memory_order_acquire) == 2 &&
+                pages[i].page_index.load(std::memory_order_relaxed) == target_page_idx)
+                return true;
         }
 
-        // Keep 4 frames of lookbehind for 4-point Hermite interpolation
-        int64_t fetch_start = std::max<int64_t>(0, start_frame - 4);
-        int32_t to_read = static_cast<int32_t>(std::min<int64_t>(kDecBufFrames, total_frames - fetch_start));
-        if (to_read <= 0)
-            return false;
+        // Choose victim slot: empty first, else farthest from current_rt_page
+        int victim = -1;
+        int64_t max_dist = -1;
+        for (int i = 0; i < kNumPages; ++i) {
+            if (pages[i].state.load(std::memory_order_acquire) == 0) {
+                victim = i;
+                break;
+            }
+            int64_t pi = pages[i].page_index.load(std::memory_order_relaxed);
+            int64_t dist = std::llabs(pi - current_rt_page);
+            if (dist > max_dist) {
+                max_dist = dist;
+                victim = i;
+            }
+        }
+        if (victim < 0) victim = 0;
 
-        if (decoder_frame_pos != fetch_start) {
-            if (ma_decoder_seek_to_pcm_frame(&decoder, static_cast<ma_uint64>(fetch_start)) != MA_SUCCESS) {
+        auto& pg = pages[victim];
+        pg.state.store(1, std::memory_order_release); // Writing
+        // Wait for any in-flight RT reader on this page (practically 0ns since victim is farthest page)
+        for (int spin = 0; spin < 200 && pg.rt_readers.load(std::memory_order_acquire) > 0; ++spin)
+            std::this_thread::yield();
+
+        int32_t to_read = static_cast<int32_t>(std::min<int64_t>(kPageFrames, total_frames - start_f));
+        if (decoder_frame_pos != start_f) {
+            if (ma_decoder_seek_to_pcm_frame(&decoder, static_cast<ma_uint64>(start_f)) != MA_SUCCESS) {
+                pg.state.store(0, std::memory_order_release);
                 return false;
             }
-            decoder_frame_pos = fetch_start;
+            decoder_frame_pos = start_f;
         }
 
-        ma_uint64 actually_read = 0;
-        ma_result r = ma_decoder_read_pcm_frames(&decoder, dec_buf, static_cast<ma_uint64>(to_read), &actually_read);
-        if (r != MA_SUCCESS && actually_read == 0) {
+        ma_uint64 got = 0;
+        ma_result r = ma_decoder_read_pcm_frames(&decoder, pg.pcm, static_cast<ma_uint64>(to_read), &got);
+        if (r != MA_SUCCESS && got == 0) {
+            pg.state.store(0, std::memory_order_release);
             return false;
         }
-        decoder_frame_pos += static_cast<int64_t>(actually_read);
-        dec_buf_start_frame = fetch_start;
-        dec_buf_valid_frames = static_cast<int32_t>(actually_read);
-        return dec_buf_valid_frames > 0;
+        decoder_frame_pos += static_cast<int64_t>(got);
+        pg.start_frame = start_f;
+        pg.valid_frames = static_cast<int32_t>(got);
+        pg.page_index.store(target_page_idx, std::memory_order_relaxed);
+        pg.state.store(2, std::memory_order_release); // Ready!
+        return true;
+    }
+
+    void prewarmAroundFrame(int64_t frame, int32_t dir) noexcept {
+        std::lock_guard<std::mutex> lk(decoder_mutex);
+        if (!decoder_valid || total_frames <= 0)
+            return;
+        int64_t clamped = std::clamp<int64_t>(frame, 0, total_frames - 1);
+        int64_t cur_p = clamped / kPageFrames;
+        int64_t d = dir < 0 ? -1 : 1;
+        decodePageLocked(cur_p, cur_p);
+        decodePageLocked(cur_p + d, cur_p);
+        if (cur_p - d >= 0)
+            decodePageLocked(cur_p - d, cur_p);
+    }
+
+    // 100% LOCK-FREE, ZERO-DECODE read from pre-decoded 4-page PCM cache (RT audio callback safe!)
+    inline bool readCachedFrameRT(int64_t idx, float& outL, float& outR) noexcept {
+        int64_t p_idx = idx / kPageFrames;
+        int64_t rel = idx - p_idx * kPageFrames;
+        for (int i = 0; i < kNumPages; ++i) {
+            auto& pg = pages[i];
+            if (pg.state.load(std::memory_order_acquire) == 2 &&
+                pg.page_index.load(std::memory_order_relaxed) == p_idx) {
+                pg.rt_readers.fetch_add(1, std::memory_order_acq_rel);
+                if (pg.state.load(std::memory_order_acquire) == 2 &&
+                    pg.page_index.load(std::memory_order_relaxed) == p_idx &&
+                    rel >= 0 && rel < pg.valid_frames) {
+                    outL = pg.pcm[rel * 2 + 0];
+                    outR = pg.pcm[rel * 2 + 1];
+                    pg.rt_readers.fetch_sub(1, std::memory_order_release);
+                    return true;
+                }
+                pg.rt_readers.fetch_sub(1, std::memory_order_release);
+            }
+        }
+        outL = outR = 0.0f;
+        return false;
     }
 
     inline void sampleSourceHermite(double frame_pos, float& outL, float& outR) noexcept {
@@ -254,20 +330,17 @@ struct TrackSlot {
         int64_t i2 = std::min<int64_t>(total_frames - 1, i1 + 1);
         int64_t i3 = std::min<int64_t>(total_frames - 1, i1 + 2);
 
-        if (!ensureFramesDecoded(i0, static_cast<int32_t>(i3 - i0 + 1))) {
+        float l0, r0, l1, r1, l2, r2, l3, r3;
+        if (!readCachedFrameRT(i1, l1, r1)) {
             outL = outR = 0.0f;
             return;
         }
+        if (!readCachedFrameRT(i0, l0, r0)) { l0 = l1; r0 = r1; }
+        if (!readCachedFrameRT(i2, l2, r2)) { l2 = l1; r2 = r1; }
+        if (!readCachedFrameRT(i3, l3, r3)) { l3 = l2; r3 = r2; }
 
-        auto at = [&](int64_t idx, int ch) -> float {
-            int64_t rel = idx - dec_buf_start_frame;
-            if (rel < 0) rel = 0;
-            if (rel >= dec_buf_valid_frames) rel = dec_buf_valid_frames - 1;
-            return dec_buf[rel * 2 + ch];
-        };
-
-        outL = hermite4(at(i0, 0), at(i1, 0), at(i2, 0), at(i3, 0), frac);
-        outR = hermite4(at(i0, 1), at(i1, 1), at(i2, 1), at(i3, 1), frac);
+        outL = hermite4(l0, l1, l2, l3, frac);
+        outR = hermite4(r0, r1, r2, r3, frac);
     }
 
     void primeStretcher(int32_t dev_sr, double rate, double pitch) noexcept {
@@ -324,6 +397,12 @@ struct ta_engine {
     bool nosound_active = false;
     std::atomic<bool> nosound_stop{false};
     std::thread nosound_thread;
+
+    // Dedicated background decode thread (keeps 4-page PCM cache filled ahead of RT callback!)
+    std::atomic<bool> decode_stop{false};
+    std::mutex decode_wake_mutex;
+    std::condition_variable decode_wake_cv;
+    std::thread decode_thread;
 
     std::atomic<int32_t> active_sample_rate{44100};
     std::atomic<int32_t> active_channels{2};
@@ -406,6 +485,10 @@ static void renderTrack(TrackSlot& trk, float* out_stereo, uint32_t frames, int3
     const double abs_rate = std::fabs(signed_rate);
     const double dir = signed_rate < 0.0 ? -1.0 : 1.0;
     const double sr_ratio = static_cast<double>(trk.src_sample_rate) / static_cast<double>(dev_sr);
+
+    // Publish cursor hint for background decode_thread (lock-free, zero syscalls)
+    trk.rt_hint_frame.store(static_cast<int64_t>(trk.src_cursor_frame), std::memory_order_relaxed);
+    trk.rt_hint_dir.store(dir < 0.0 ? -1 : 1, std::memory_order_relaxed);
 
     // Activate Signalsmith Stretch ONLY when tempo != 1.0 (pitch-preserving time-stretch).
     // For normal 1.0x and classic Nightcore/Daycore/AdjustPitch (tempo == 1.0), pure Hermite
@@ -942,12 +1025,57 @@ TA_API ta_engine* ta_engine_create(void) {
     if (ma_context_init(nullptr, 0, &ctx_cfg, &eng->context) == MA_SUCCESS) {
         eng->context_valid = true;
     }
+
+    // Start dedicated background decode thread so RT audio callback NEVER runs MP3/OGG decoding!
+    eng->decode_stop.store(false, std::memory_order_release);
+    eng->decode_thread = std::thread([eng]() {
+#if defined(_WIN32)
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
+        while (!eng->decode_stop.load(std::memory_order_acquire)) {
+            for (int32_t t = 0; t < torii_audio::kMaxTracks; ++t) {
+                auto& trk = eng->tracks[t];
+                if (trk.state.load(std::memory_order_acquire) != torii_audio::kSlotActive)
+                    continue;
+                if (trk.desired_playing.load(std::memory_order_acquire) == 0 &&
+                    trk.published_playing.load(std::memory_order_acquire) == 0)
+                    continue;
+
+                std::unique_lock<std::mutex> lk(trk.decoder_mutex, std::try_to_lock);
+                if (!lk.owns_lock())
+                    continue;
+                if (trk.state.load(std::memory_order_acquire) != torii_audio::kSlotActive || !trk.decoder_valid || trk.total_frames <= 0)
+                    continue;
+
+                int64_t hint = std::clamp<int64_t>(trk.rt_hint_frame.load(std::memory_order_relaxed), 0, trk.total_frames - 1);
+                int64_t cur_p = hint / torii_audio::TrackSlot::kPageFrames;
+                int64_t dir = trk.rt_hint_dir.load(std::memory_order_relaxed) < 0 ? -1 : 1;
+
+                // Keep [cur, cur+dir, cur+2*dir, cur-dir] warm (~1.5s sliding window)
+                trk.decodePageLocked(cur_p, cur_p);
+                trk.decodePageLocked(cur_p + dir, cur_p);
+                trk.decodePageLocked(cur_p + 2 * dir, cur_p);
+                if (cur_p - dir >= 0)
+                    trk.decodePageLocked(cur_p - dir, cur_p);
+            }
+
+            std::unique_lock<std::mutex> wlk(eng->decode_wake_mutex);
+            eng->decode_wake_cv.wait_for(wlk, std::chrono::milliseconds(4));
+        }
+    });
+
     return eng;
 }
 
 TA_API void ta_engine_destroy(ta_engine* eng) {
     if (!eng)
         return;
+
+    eng->decode_stop.store(true, std::memory_order_release);
+    eng->decode_wake_cv.notify_all();
+    if (eng->decode_thread.joinable())
+        eng->decode_thread.join();
+
     ta_device_free(eng);
 
     for (int32_t t = 0; t < torii_audio::kMaxTracks; ++t) {
@@ -1175,22 +1303,24 @@ TA_API int32_t ta_device_init(
             cfg.periods = 2;
         } else {
 #if defined(_WIN32)
-            // Request device minimum period (~2-3ms on Win10/11) so miniaudio uses IAudioClient3 low-latency shared!
-            double min_ms = 3.0, def_ms = 10.0;
-            int32_t mix_rate = 48000;
-            torii_audio::queryWasapiPeriods(target_id, min_ms, def_ms, mix_rate);
-            cfg.periodSizeInMilliseconds = static_cast<ma_uint32>(std::max(2.0, std::round(min_ms)));
+            // Enable Windows 10/11 IAudioClient3 ultra-low-latency shared mode (~2.67-5.33ms)!
+            // miniaudio requires wasapi.noAutoConvertSRC = MA_TRUE + native sampleRate (0) for IAudioClient3.
+            cfg.sampleRate = 0;
+            cfg.periodSizeInMilliseconds = 0;
             cfg.periods = 2;
+            cfg.wasapi.noAutoConvertSRC = MA_TRUE;
+            cfg.wasapi.noDefaultQualitySRC = MA_TRUE;
 #else
-            cfg.periodSizeInMilliseconds = 0; // Device minimum low-latency shared period!
+            cfg.periodSizeInMilliseconds = 0;
             cfg.periods = 2;
 #endif
         }
 
         last_ma_res = ma_device_init(&eng->context, &cfg, &eng->device);
         if (last_ma_res != MA_SUCCESS) {
-            // Safe fallback with default OS parameters
-            ma_device_config fb = makeBaseConfig(ma_share_mode_shared, ma_performance_profile_conservative);
+            // Safe fallback with default OS parameters + AutoConvertSRC enabled
+            ma_device_config fb = makeBaseConfig(ma_share_mode_shared, ma_performance_profile_low_latency);
+            fb.wasapi.noAutoConvertSRC = MA_FALSE;
             last_ma_res = ma_device_init(&eng->context, &fb, &eng->device);
             if (last_ma_res != MA_SUCCESS) {
                 eng->last_error.store(TA_ERR_GENERIC, std::memory_order_release);
@@ -1204,12 +1334,24 @@ TA_API int32_t ta_device_init(
     const int32_t sr = static_cast<int32_t>(eng->device.sampleRate > 0 ? eng->device.sampleRate : 48000);
     const int32_t ch = static_cast<int32_t>(eng->device.playback.channels > 0 ? eng->device.playback.channels : 2);
     const uint32_t internal_sr = eng->device.playback.internalSampleRate > 0 ? eng->device.playback.internalSampleRate : static_cast<uint32_t>(sr);
-    const uint32_t period_frames = eng->device.playback.internalPeriodSizeInFrames;
+    uint32_t period_frames = eng->device.playback.internalPeriodSizeInFrames;
     const uint32_t periods_cnt = std::max<uint32_t>(1, eng->device.playback.internalPeriods);
 
+#if defined(_WIN32)
+    // When IAudioClient3 low-latency shared succeeds, actualBufferSizeInFramesPlayback holds the real small buffer!
+    uint32_t actual_buf_frames = (eng->context.backend == ma_backend_wasapi && eng->device.wasapi.actualBufferSizeInFramesPlayback > 0)
+        ? eng->device.wasapi.actualBufferSizeInFramesPlayback
+        : (period_frames * periods_cnt);
+    if (eng->context.backend == ma_backend_wasapi && actual_buf_frames > 0 && actual_buf_frames < period_frames)
+        period_frames = actual_buf_frames;
     const double period_ms = period_frames > 0 ? (static_cast<double>(period_frames) * 1000.0 / static_cast<double>(internal_sr)) : 10.0;
-    // In event-driven double-buffered WASAPI Exclusive, effective queued hardware latency is ~1-2 periods
+    const double lat_ms = (actual_mode == TA_MODE_EXCLUSIVE)
+        ? period_ms
+        : (static_cast<double>(actual_buf_frames) * 1000.0 / static_cast<double>(internal_sr));
+#else
+    const double period_ms = period_frames > 0 ? (static_cast<double>(period_frames) * 1000.0 / static_cast<double>(internal_sr)) : 10.0;
     const double lat_ms = (actual_mode == TA_MODE_EXCLUSIVE) ? period_ms : (period_ms * static_cast<double>(periods_cnt));
+#endif
 
     eng->active_sample_rate.store(sr, std::memory_order_release);
     eng->active_channels.store(ch, std::memory_order_release);
@@ -1627,6 +1769,11 @@ TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, 
     trk.cur_gain_r = 1.0f;
     trk.resetDecoderCache();
     trk.analysis.clear();
+    trk.rt_hint_frame.store(0, std::memory_order_relaxed);
+    trk.rt_hint_dir.store(1, std::memory_order_relaxed);
+
+    // Pre-warm page 0 & 1 off the RT thread so playback starts with 0.00ms delay!
+    trk.prewarmAroundFrame(0, 1);
 
     // Pre-configure Signalsmith Stretch off the RT thread (zero RT allocation!)
     int32_t dev_sr = std::max(8000, eng->active_sample_rate.load(std::memory_order_acquire));
@@ -1662,13 +1809,17 @@ TA_API void ta_track_destroy(ta_engine* eng, int32_t track_handle) {
 
     trk.state.store(torii_audio::kSlotRetiring, std::memory_order_release);
     torii_audio::waitRtQuiescent(eng);
-    if (trk.decoder_valid) {
-        ma_decoder_uninit(&trk.decoder);
-        trk.decoder_valid = false;
+    {
+        std::lock_guard<std::mutex> dlk(trk.decoder_mutex);
+        if (trk.decoder_valid) {
+            ma_decoder_uninit(&trk.decoder);
+            trk.decoder_valid = false;
+        }
+        std::free(trk.raw_data);
+        trk.raw_data = nullptr;
+        trk.raw_size = 0;
+        trk.resetDecoderCache();
     }
-    std::free(trk.raw_data);
-    trk.raw_data = nullptr;
-    trk.raw_size = 0;
     trk.state.store(torii_audio::kSlotFree, std::memory_order_release);
 }
 
@@ -1682,6 +1833,7 @@ TA_API int32_t ta_track_play(ta_engine* eng, int32_t track_handle) {
 
     trk.desired_playing.store(1, std::memory_order_release);
     trk.published_playing.store(1, std::memory_order_release);
+    eng->decode_wake_cv.notify_one();
     return 1;
 }
 
@@ -1715,12 +1867,20 @@ TA_API int32_t ta_track_seek_ms(ta_engine* eng, int32_t track_handle, double tar
     double clamped = std::clamp(target_ms, 0.0, trk.last_seekable_ms);
     bool exact_in_range = (target_ms >= 0.0 && target_ms <= trk.last_seekable_ms && trk.total_frames > 0);
 
+    // Pre-warm sliding PCM pages around sought frame off the RT thread (zero RT stall!)
+    int64_t seek_frame = static_cast<int64_t>(clamped * 0.001 * trk.src_sample_rate);
+    int32_t dir = trk.target_frequency.load(std::memory_order_relaxed) < 0.0 ? -1 : 1;
+    trk.rt_hint_frame.store(seek_frame, std::memory_order_relaxed);
+    trk.rt_hint_dir.store(dir, std::memory_order_relaxed);
+    trk.prewarmAroundFrame(seek_frame, dir);
+
     // Publish immediately so CurrentTime reflects the sought position BEFORE the next audio tick!
     trk.seek_target_ms.store(clamped, std::memory_order_relaxed);
     trk.published_time_ms.store(clamped, std::memory_order_release);
     if (clamped < trk.length_ms)
         trk.published_completed.store(0, std::memory_order_release);
     trk.seek_seq.fetch_add(1, std::memory_order_release);
+    eng->decode_wake_cv.notify_one();
 
     if (out_actual_ms)
         *out_actual_ms = clamped;

@@ -246,6 +246,8 @@ TA_API int32_t ta_probe_memory(const uint8_t* data, size_t len, int32_t prescan,
 TA_API int32_t ta_probe_callbacks(const ta_io_callbacks* cbs, void* user_data, int32_t prescan, ta_audio_info* out_info);
 TA_API int32_t ta_waveform_generate(const uint8_t* data, size_t len, ta_waveform_result* out_result);
 TA_API void ta_waveform_free(ta_waveform_result* result);
+TA_API int32_t ta_decode_memory_f32(const uint8_t* data, size_t len, float** out_pcm, int64_t* out_frames, int32_t* out_sample_rate, int32_t* out_channels);
+TA_API void ta_free_buffer(void* ptr);
 
 #ifdef __cplusplus
 }

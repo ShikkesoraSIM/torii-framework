@@ -95940,26 +95940,44 @@ static ma_bool32 ma_dr_mp3_init_internal(ma_dr_mp3* pMP3, ma_dr_mp3_read_proc on
         {
             ma_dr_mp3_bs bs;
             ma_dr_mp3_L3_gr_info grInfo[4];
-            ma_dr_mp3_bs_init(&bs, pFirstFrameData + MA_DR_MP3_HDR_SIZE, firstFrameInfo.frame_bytes - MA_DR_MP3_HDR_SIZE);
-            if (MA_DR_MP3_HDR_IS_CRC(pFirstFrameData)) {
+            /* Torii fix: locate exact decoded MPEG header inside pFirstFrameData (skips any leading garbage bytes before 0xFF 0xFB so Xing/Info/LAME tags are always parsed!) */
+            const ma_uint8* pAlignedFrame = pFirstFrameData;
+            size_t alignedFrameBytes = (size_t)firstFrameInfo.frame_bytes;
+            {
+                size_t scanOff = 0;
+                while (scanOff + 4 <= (size_t)firstFrameInfo.frame_bytes) {
+                    if (pFirstFrameData[scanOff] == pMP3->decoder.header[0] &&
+                        pFirstFrameData[scanOff + 1] == pMP3->decoder.header[1] &&
+                        pFirstFrameData[scanOff + 2] == pMP3->decoder.header[2] &&
+                        pFirstFrameData[scanOff + 3] == pMP3->decoder.header[3]) {
+                        pAlignedFrame = pFirstFrameData + scanOff;
+                        alignedFrameBytes = (size_t)firstFrameInfo.frame_bytes - scanOff;
+                        break;
+                    }
+                    ++scanOff;
+                }
+            }
+            if (alignedFrameBytes > MA_DR_MP3_HDR_SIZE) {
+            ma_dr_mp3_bs_init(&bs, pAlignedFrame + MA_DR_MP3_HDR_SIZE, alignedFrameBytes - MA_DR_MP3_HDR_SIZE);
+            if (MA_DR_MP3_HDR_IS_CRC(pAlignedFrame)) {
                 ma_dr_mp3_bs_get_bits(&bs, 16);
             }
-            if (ma_dr_mp3_L3_read_side_info(&bs, grInfo, pFirstFrameData) >= 0) {
+            if (ma_dr_mp3_L3_read_side_info(&bs, grInfo, pAlignedFrame) >= 0) {
                 ma_bool32 isXing = MA_FALSE;
                 ma_bool32 isInfo = MA_FALSE;
                 const ma_uint8* pTagData;
                 const ma_uint8* pTagDataBeg;
                 const void* pDataBufferEnd = NULL;
                 size_t frameBytes;
-                pTagDataBeg = pFirstFrameData + MA_DR_MP3_HDR_SIZE + (bs.pos/8);
+                pTagDataBeg = pAlignedFrame + MA_DR_MP3_HDR_SIZE + (bs.pos/8);
                 pTagData    = pTagDataBeg;
                 if (pMP3->memory.pData != NULL && pMP3->memory.dataSize > 0) {
                     pDataBufferEnd = pMP3->memory.pData + pMP3->memory.dataSize;
                 } else {
                     pDataBufferEnd = pMP3->pData + pMP3->dataCapacity;
                 }
-                frameBytes = MA_DR_MP3_MIN((size_t)firstFrameInfo.frame_bytes, (size_t)((ma_uint8*)pDataBufferEnd - pFirstFrameData));
-                if (frameBytes < (size_t)(pTagData - pFirstFrameData) + 8) {
+                frameBytes = MA_DR_MP3_MIN(alignedFrameBytes, (size_t)((ma_uint8*)pDataBufferEnd - pAlignedFrame));
+                if (frameBytes < (size_t)(pTagData - pAlignedFrame) + 8) {
                     goto done_xing_info;
                 }
                 isXing = (pTagData[0] == 'X' && pTagData[1] == 'i' && pTagData[2] == 'n' && pTagData[3] == 'g');
@@ -95969,14 +95987,14 @@ static ma_bool32 ma_dr_mp3_init_internal(ma_dr_mp3* pMP3, ma_dr_mp3_read_proc on
                     ma_uint32 flags = pTagData[7];
                     pTagData += 8;
                     if (flags & 0x01) {
-                        if (frameBytes < (size_t)(pTagData - pFirstFrameData) + 4) {
+                        if (frameBytes < (size_t)(pTagData - pAlignedFrame) + 4) {
                             goto done_xing_info;
                         }
                         detectedMP3FrameCount = (ma_uint32)pTagData[0] << 24 | (ma_uint32)pTagData[1] << 16 | (ma_uint32)pTagData[2] << 8 | (ma_uint32)pTagData[3];
                         pTagData += 4;
                     }
                     if (flags & 0x02) {
-                        if (frameBytes < (size_t)(pTagData - pFirstFrameData) + 4) {
+                        if (frameBytes < (size_t)(pTagData - pAlignedFrame) + 4) {
                             goto done_xing_info;
                         }
                         bytes  = (ma_uint32)pTagData[0] << 24 | (ma_uint32)pTagData[1] << 16 | (ma_uint32)pTagData[2] << 8 | (ma_uint32)pTagData[3];
@@ -95984,34 +96002,39 @@ static ma_bool32 ma_dr_mp3_init_internal(ma_dr_mp3* pMP3, ma_dr_mp3_read_proc on
                         pTagData += 4;
                     }
                     if (flags & 0x04) {
-                        if (frameBytes < (size_t)(pTagData - pFirstFrameData) + 100) {
+                        if (frameBytes < (size_t)(pTagData - pAlignedFrame) + 100) {
                             goto done_xing_info;
                         }
                         pTagData += 100;
                     }
                     if (flags & 0x08) {
-                        if (frameBytes < (size_t)(pTagData - pFirstFrameData) + 4) {
+                        if (frameBytes < (size_t)(pTagData - pAlignedFrame) + 4) {
                             goto done_xing_info;
                         }
                         pTagData += 4;
                     }
-                    if (frameBytes < (size_t)(pTagData - pFirstFrameData) + 1) {
+                    if (frameBytes < (size_t)(pTagData - pAlignedFrame) + 1) {
                         goto done_xing_info;
                     }
                     if (pTagData[0]) {
-                        int delayInPCMFrames;
-                        int paddingInPCMFrames;
-                        if (frameBytes < (size_t)(pTagData - pFirstFrameData) + 36) {
+                        int rawDelay;
+                        int rawPadding;
+                        if (frameBytes < (size_t)(pTagData - pAlignedFrame) + 36) {
                             goto done_xing_info;
                         }
                         pTagData += 21;
-                        delayInPCMFrames   = (( (ma_uint32)pTagData[0]        << 4) | ((ma_uint32)pTagData[1] >> 4)) + (528 + 1);
-                        paddingInPCMFrames = ((((ma_uint32)pTagData[1] & 0xF) << 8) | ((ma_uint32)pTagData[2]     )) - (528 + 1);
-                        if (paddingInPCMFrames < 0) {
-                            paddingInPCMFrames = 0;
+                        rawDelay   = (( (ma_uint32)pTagData[0]        << 4) | ((ma_uint32)pTagData[1] >> 4));
+                        rawPadding = ((((ma_uint32)pTagData[1] & 0xF) << 8) | ((ma_uint32)pTagData[2]     ));
+                        /* Torii fix (BASS_CONFIG_MP3_OLDGAPS=1 parity): do not strip 529 samples when encoder wrote 0/0 (e.g. Lavf). */
+                        if (rawDelay > 0 || rawPadding > 0) {
+                            int delayInPCMFrames   = rawDelay + (528 + 1);
+                            int paddingInPCMFrames = rawPadding - (528 + 1);
+                            if (paddingInPCMFrames < 0) {
+                                paddingInPCMFrames = 0;
+                            }
+                            pMP3->delayInPCMFrames   = (ma_uint32)delayInPCMFrames;
+                            pMP3->paddingInPCMFrames = (ma_uint32)paddingInPCMFrames;
                         }
-                        pMP3->delayInPCMFrames   = (ma_uint32)delayInPCMFrames;
-                        pMP3->paddingInPCMFrames = (ma_uint32)paddingInPCMFrames;
                     }
                     if (isXing) {
                         pMP3->isVBR = MA_TRUE;
@@ -96021,8 +96044,8 @@ static ma_bool32 ma_dr_mp3_init_internal(ma_dr_mp3* pMP3, ma_dr_mp3_read_proc on
                     if (onMeta != NULL) {
                         ma_dr_mp3_metadata_type metadataType = isXing ? MA_DR_MP3_METADATA_TYPE_XING : MA_DR_MP3_METADATA_TYPE_VBRI;
                         size_t tagDataSize;
-                        tagDataSize  = (size_t)firstFrameInfo.frame_bytes;
-                        tagDataSize -= (size_t)(pTagDataBeg - pFirstFrameData);
+                        tagDataSize  = alignedFrameBytes;
+                        tagDataSize -= (size_t)(pTagDataBeg - pAlignedFrame);
                         ma_dr_mp3__on_meta(pMP3, metadataType, pTagDataBeg, tagDataSize);
                     }
                     pMP3->pcmFramesRemainingInMP3Frame = 0;
@@ -96030,6 +96053,7 @@ static ma_bool32 ma_dr_mp3_init_internal(ma_dr_mp3* pMP3, ma_dr_mp3_read_proc on
                     ma_dr_mp3dec_init(&pMP3->decoder);
                 }
                 done_xing_info:;
+            }
             } else {
             }
         }

@@ -107,13 +107,13 @@ namespace osu.Framework.Android
             base.OnPause();
 
             // Android may hold back onDestroy for seconds, in which the app can be started again.
-            if (IsFinishing)
+            if (IsFinishing && !IsChangingConfigurations)
                 scheduleProcessExit(finishing_grace_period);
         }
 
         protected override void OnDestroy()
         {
-            bool finishing = IsFinishing;
+            bool finishing = IsFinishing && !IsChangingConfigurations;
 
             // Asks the game to quit, and gives it a second to.
             base.OnDestroy();

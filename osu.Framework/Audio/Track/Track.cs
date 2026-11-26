@@ -21,6 +21,22 @@ namespace osu.Framework.Audio.Track
 
         public double RestartPoint { get; set; }
 
+        /// <summary>
+        /// Computes and assigns <see cref="RestartPoint"/> using the track's <see cref="Length"/> once loaded,
+        /// without blocking the caller when the track is still loading asynchronously on the audio thread.
+        /// Runs in FIFO order ahead of any subsequent <see cref="RestartAsync"/> call.
+        /// </summary>
+        public void SetRestartPointWhenLoaded(Func<double, double> computeRestartPoint)
+        {
+            if (IsLoaded)
+            {
+                RestartPoint = computeRestartPoint(Length);
+                return;
+            }
+
+            EnqueueAction(() => RestartPoint = computeRestartPoint(Length));
+        }
+
         public virtual bool Looping { get; set; }
 
         public string Name { get; }

@@ -1456,11 +1456,12 @@ TA_API int32_t ta_device_init(
             cfg.periods = 2;
         } else {
 #if defined(_WIN32)
-            // Enable Windows 10/11 IAudioClient3 ultra-low-latency shared mode (~2.67-5.33ms)!
-            // miniaudio requires wasapi.noAutoConvertSRC = MA_TRUE + native sampleRate (0) for IAudioClient3.
+            // Enable Windows 10/11 IAudioClient3 ultra-low-latency shared mode (true hardware minPeriodInFrames, ~2.67-5.33ms)!
+            // Passing periodSizeInFrames=1 forces miniaudio to clamp up to exact minPeriodInFrames and guarantees
+            // actualPeriodInFrames >= desiredPeriodInFrames so IAudioClient3_InitializeSharedAudioStream is always used!
             cfg.sampleRate = 0;
-            cfg.periodSizeInMilliseconds = 0;
-            cfg.periods = 2;
+            cfg.periodSizeInFrames = 1;
+            cfg.periods = 1;
             cfg.wasapi.noAutoConvertSRC = MA_TRUE;
             cfg.wasapi.noDefaultQualitySRC = MA_TRUE;
 #else

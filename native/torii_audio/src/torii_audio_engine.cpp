@@ -179,8 +179,11 @@ struct TrackSlot {
     double src_cursor_frame = 0.0;     // Exact source PCM frame position
     int64_t decoder_frame_pos = 0;     // Where ma_decoder currently sits
     bool has_completed = false;
-    float cur_gain_l = 1.0f;
-    float cur_gain_r = 1.0f;
+    float cur_gain_l = 0.0f;
+    float cur_gain_r = 0.0f;
+    float last_out_l = 0.0f;           // Last emitted post-gain sample for C0-continuous de-clicking on stop/seek/destroy
+    float last_out_r = 0.0f;
+    bool was_emitting = false;
 
     // 4-page lock-free sliding PCM cache (4 x 12288 frames = ~1.11s @ 44.1kHz, 384 KB per track).
     // 12288 frames guarantees even 2.0x DT SignalsmithStretch outputSeek (10584 src frames) hits 100%
@@ -453,6 +456,9 @@ struct ta_engine {
     int32_t default_root_mixer_handle = 0;
 
     float master_buf[torii_audio::kMaxRenderFrames * 2]{};
+    // C0-continuous master de-clicker: absorbs any abrupt step when a track pauses/seeks/destroys mid-waveform (~3ms decay)
+    float declick_l = 0.0f;
+    float declick_r = 0.0f;
 };
 
 namespace torii_audio {
@@ -466,10 +472,23 @@ static void waitRtQuiescent(ta_engine* eng) noexcept {
     }
 }
 
-static void renderTrack(TrackSlot& trk, float* out_stereo, uint32_t frames, int32_t dev_sr) noexcept {
-    // Process pending seek immediately
+static void renderTrack(ta_engine* eng, TrackSlot& trk, float* out_stereo, uint32_t frames, int32_t dev_sr) noexcept {
+    auto absorbDeclick = [&]() noexcept {
+        if (trk.was_emitting) {
+            eng->declick_l += trk.last_out_l;
+            eng->declick_r += trk.last_out_r;
+            trk.last_out_l = 0.0f;
+            trk.last_out_r = 0.0f;
+            trk.was_emitting = false;
+        }
+        trk.cur_gain_l = 0.0f;
+        trk.cur_gain_r = 0.0f;
+    };
+
+    // Process pending seek immediately (with C0-continuous de-click across the jump!)
     uint32_t sseq = trk.seek_seq.load(std::memory_order_acquire);
     if (sseq != trk.applied_seek_seq) {
+        absorbDeclick();
         double target_ms = trk.seek_target_ms.load(std::memory_order_relaxed);
         double target_frame = std::clamp(target_ms * 0.001 * trk.src_sample_rate, 0.0, static_cast<double>(std::max<int64_t>(0, trk.total_frames - 1)));
         trk.src_cursor_frame = target_frame;
@@ -491,12 +510,14 @@ static void renderTrack(TrackSlot& trk, float* out_stereo, uint32_t frames, int3
     const float bal = trk.target_balance.load(std::memory_order_relaxed);
 
     if (!want_play || trk.has_completed || !trk.decoder_valid || trk.total_frames <= 0) {
+        absorbDeclick();
         trk.published_playing.store(0, std::memory_order_release);
         return;
     }
 
     // Zero-frequency virtual pause: keep logical playing = 1, emit silence, hold cursor
     if (std::fabs(freq) < 1e-6) {
+        absorbDeclick();
         trk.published_playing.store(1, std::memory_order_release);
         return;
     }
@@ -613,19 +634,25 @@ static void renderTrack(TrackSlot& trk, float* out_stereo, uint32_t frames, int3
     // Tap pre-volume post-DSP audio into lock-free analysis ring (matches BASSmix MixerChanBuffer)
     trk.analysis.pushInterleaved(trk.track_buf, frames, dev_sr);
 
-    // Apply smoothed volume + linear stereo pan and sum into target mixer bus
+    // Apply smoothed volume (3.5ms de-click ramp) + linear stereo pan and sum into target mixer bus
     float panL = 1.0f, panR = 1.0f;
     computePanGains(bal, panL, panR);
     const float targetL = vol * panL;
     const float targetR = vol * panR;
-    const float smooth = 1.0f - std::exp(-1.0f / std::max(1.0f, 0.002f * dev_sr));
+    const float smooth = 1.0f - std::exp(-1.0f / std::max(1.0f, 0.0035f * dev_sr));
 
+    float lastL = 0.0f, lastR = 0.0f;
     for (uint32_t i = 0; i < frames; ++i) {
         trk.cur_gain_l += (targetL - trk.cur_gain_l) * smooth;
         trk.cur_gain_r += (targetR - trk.cur_gain_r) * smooth;
-        out_stereo[i * 2 + 0] += trk.track_buf[i * 2 + 0] * trk.cur_gain_l;
-        out_stereo[i * 2 + 1] += trk.track_buf[i * 2 + 1] * trk.cur_gain_r;
+        lastL = trk.track_buf[i * 2 + 0] * trk.cur_gain_l;
+        lastR = trk.track_buf[i * 2 + 1] * trk.cur_gain_r;
+        out_stereo[i * 2 + 0] += lastL;
+        out_stereo[i * 2 + 1] += lastR;
     }
+    trk.last_out_l = lastL;
+    trk.last_out_r = lastR;
+    trk.was_emitting = (frames > 0);
 
     // Publish exact audible CurrentTime (ms):
     // Because primeStretcher() uses outputSeek() to pre-align output sample 0 to src_cursor_frame,
@@ -789,8 +816,16 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
         // 2. Render active tracks into their assigned sub-mixer (or master directly)
         for (int32_t t = 0; t < track_limit; ++t) {
             TrackSlot& trk = eng->tracks[t];
-            if (trk.state.load(std::memory_order_acquire) != kSlotActive)
+            if (trk.state.load(std::memory_order_acquire) != kSlotActive) {
+                if (trk.was_emitting) {
+                    eng->declick_l += trk.last_out_l;
+                    eng->declick_r += trk.last_out_r;
+                    trk.last_out_l = 0.0f;
+                    trk.last_out_r = 0.0f;
+                    trk.was_emitting = false;
+                }
                 continue;
+            }
 
             int32_t mh = trk.mixer_handle.load(std::memory_order_acquire);
             float* dst = eng->master_buf;
@@ -799,7 +834,7 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
                 if (midx >= 0 && midx < kMaxMixers && eng->mixers[midx].state.load(std::memory_order_acquire) == kSlotActive)
                     dst = eng->mixers[midx].mix_buf;
             }
-            renderTrack(trk, dst, frames, dev_sr);
+            renderTrack(eng, trk, dst, frames, dev_sr);
         }
 
         // 3. Render active sample channels (hitsounds!) into their assigned sub-mixer
@@ -870,7 +905,22 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
                 eng->master_buf[i] += mx.mix_buf[i];
         }
 
-        // 5. Tap root mixer analysis if present & soft-limit master output
+        // 5. Apply C0-continuous master de-clicker (smooth ~4ms exponential decay on abrupt stop/seek/destroy)
+        if (std::fabs(eng->declick_l) > 1e-6f || std::fabs(eng->declick_r) > 1e-6f) {
+            const float decay = std::exp(-1.0f / std::max(1.0f, 0.004f * dev_sr));
+            float dl = eng->declick_l;
+            float dr = eng->declick_r;
+            for (uint32_t i = 0; i < frames; ++i) {
+                dl *= decay;
+                dr *= decay;
+                eng->master_buf[i * 2 + 0] += dl;
+                eng->master_buf[i * 2 + 1] += dr;
+            }
+            eng->declick_l = (std::fabs(dl) > 1e-6f) ? dl : 0.0f;
+            eng->declick_r = (std::fabs(dr) > 1e-6f) ? dr : 0.0f;
+        }
+
+        // 6. Tap root mixer analysis if present & soft-limit master output
         for (int32_t m = 0; m < mixer_limit; ++m) {
             MixerSlot& mx = eng->mixers[m];
             if (mx.state.load(std::memory_order_acquire) == kSlotActive && mx.is_global_root.load(std::memory_order_relaxed)) {
@@ -1849,8 +1899,11 @@ static int32_t createTrackInternal(ta_engine* eng, uint8_t* owned_data, size_t l
     trk.src_cursor_frame = 0.0;
     trk.decoder_frame_pos = 0;
     trk.has_completed = false;
-    trk.cur_gain_l = 1.0f;
-    trk.cur_gain_r = 1.0f;
+    trk.cur_gain_l = 0.0f;
+    trk.cur_gain_r = 0.0f;
+    trk.last_out_l = 0.0f;
+    trk.last_out_r = 0.0f;
+    trk.was_emitting = false;
     trk.resetDecoderCache();
     trk.analysis.clear();
     trk.rt_hint_frame.store(0, std::memory_order_relaxed);

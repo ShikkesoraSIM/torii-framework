@@ -64,6 +64,7 @@ enum SlotState : uint32_t {
 
 struct FxSlot {
     std::atomic<uint32_t> state{kSlotFree};
+    std::atomic<uint64_t> retire_epoch{0};
     std::atomic<uint32_t> version{0};
     uint32_t applied_version = 0;
     int32_t priority = 0;
@@ -74,6 +75,7 @@ struct FxSlot {
 
 struct MixerSlot {
     std::atomic<uint32_t> state{kSlotFree};
+    std::atomic<uint64_t> retire_epoch{0};
     std::atomic<bool> is_global_root{false};
     std::atomic<uint32_t> flush_counter{0};
     uint32_t applied_flush = 0;
@@ -88,6 +90,7 @@ struct MixerSlot {
 
 struct SampleAsset {
     std::atomic<uint32_t> state{kSlotFree};
+    std::atomic<uint64_t> retire_epoch{0};
     std::atomic<int32_t> ref_count{0};
     std::atomic<int32_t> max_concurrency{2};
     int32_t sample_rate = 44100;
@@ -100,6 +103,7 @@ struct SampleAsset {
 
 struct SampleChannelSlot {
     std::atomic<uint32_t> state{kSlotFree};
+    std::atomic<uint64_t> retire_epoch{0};
     std::atomic<int32_t> sample_idx{-1};
     std::atomic<int32_t> mixer_handle{0};
 
@@ -134,6 +138,7 @@ struct SampleChannelSlot {
 
 struct TrackSlot {
     std::atomic<uint32_t> state{kSlotFree};
+    std::atomic<uint64_t> retire_epoch{0};
     std::atomic<int32_t> mixer_handle{0};
 
     // Compressed media owned in memory (zero managed callbacks on RT thread!)
@@ -177,11 +182,11 @@ struct TrackSlot {
     float cur_gain_l = 1.0f;
     float cur_gain_r = 1.0f;
 
-    // 4-page lock-free sliding PCM cache (4 x 16384 frames = ~1.48s @ 44.1kHz, 512 KB per track).
-    // Filled exclusively off the RT callback by ta_engine's background decode_thread (and synchronously
-    // warmed on ta_track_create / ta_track_seek_ms). RT callback NEVER touches ma_decoder!
+    // 4-page lock-free sliding PCM cache (4 x 12288 frames = ~1.11s @ 44.1kHz, 384 KB per track).
+    // 12288 frames guarantees even 2.0x DT SignalsmithStretch outputSeek (10584 src frames) hits 100%
+    // inside page 0 with ZERO silence gap while prewarming page 0 in ~0.4ms!
     static constexpr int32_t kNumPages = 4;
-    static constexpr int64_t kPageFrames = 16384;
+    static constexpr int64_t kPageFrames = 12288;
     struct DecodePage {
         std::atomic<uint32_t> state{0};        // 0=Empty, 1=Writing, 2=Ready
         std::atomic<int32_t> rt_readers{0};
@@ -280,6 +285,17 @@ struct TrackSlot {
         return true;
     }
 
+    // Fast single-page pre-warm (~0.3ms for 8192 frames) used on AudioThread during create/seek.
+    // Remaining lookahead pages are filled asynchronously by background decode_thread!
+    void prewarmSinglePage(int64_t frame) noexcept {
+        std::lock_guard<std::mutex> lk(decoder_mutex);
+        if (!decoder_valid || total_frames <= 0)
+            return;
+        int64_t clamped = std::clamp<int64_t>(frame, 0, total_frames - 1);
+        int64_t cur_p = clamped / kPageFrames;
+        decodePageLocked(cur_p, cur_p);
+    }
+
     void prewarmAroundFrame(int64_t frame, int32_t dir) noexcept {
         std::lock_guard<std::mutex> lk(decoder_mutex);
         if (!decoder_valid || total_frames <= 0)
@@ -354,16 +370,14 @@ struct TrackSlot {
         const double dir = rate < 0.0 ? -1.0 : 1.0;
         const double abs_r = std::max(0.05, std::fabs(rate));
 
-        const int input_lat = stretcher.inputLatency();
         const int seek_len = std::min<int>(stretcher.outputSeekLength(static_cast<float>(abs_r)), static_cast<int>(kMaxRenderFrames * 4));
-        const int surplus = std::max(0, seek_len - input_lat);
 
         if (seek_len > 0 && total_frames > 0) {
-            // inputs[0..input_lat-1] = pre-roll ending at src_cursor_frame
-            // inputs[input_lat..seek_len-1] = surplus audio starting at src_cursor_frame
-            double start_frame = src_cursor_frame - dir * static_cast<double>(input_lat) * sr_ratio;
+            // SignalsmithStretch::outputSeek(inputs, seek_len) places output sample 0 at inputs[0] (src_cursor_frame),
+            // consuming all seek_len = inputLatency() + rate * outputLatency() samples of lookahead!
+            // Next process() input sample 0 starts immediately after those seek_len samples.
             for (int i = 0; i < seek_len; ++i) {
-                double p = start_frame + dir * static_cast<double>(i) * sr_ratio;
+                double p = src_cursor_frame + dir * static_cast<double>(i) * sr_ratio;
                 if (p < 0.0 || p >= static_cast<double>(total_frames)) {
                     stretch_in_l[i] = 0.0f;
                     stretch_in_r[i] = 0.0f;
@@ -377,9 +391,8 @@ struct TrackSlot {
             stretcher.reset();
         }
 
-        // Next process() output sample 0 is aligned to EXACTLY src_cursor_frame (0.00ms offset)!
-        // Next process() input sample 0 starts right after the surplus frames already consumed.
-        stretcher_read_frame = src_cursor_frame + dir * static_cast<double>(surplus) * sr_ratio;
+        // Next process() output sample 0 is aligned to EXACTLY src_cursor_frame (0.00ms offset on ALL rates)!
+        stretcher_read_frame = src_cursor_frame + dir * static_cast<double>(seek_len) * sr_ratio;
         stretcher_last_dir = dir;
         stretcher_primed = true;
         stretcher_frac_accum = 0.0;
@@ -414,6 +427,13 @@ struct ta_engine {
     std::atomic<double> measured_latency_ms{0.0};
     std::atomic<float> cpu_usage_pct{0.0f};
     std::atomic<uint32_t> rt_callback_active{0};
+    std::atomic<uint64_t> rt_epoch{1};
+    uint32_t cpu_sample_counter = 0;
+
+    // Atomic high-water marks so RT callback only scans active slot ranges (never 640 empty slots every 3ms!)
+    std::atomic<int32_t> max_mixer_slot{0};
+    std::atomic<int32_t> max_track_slot{0};
+    std::atomic<int32_t> max_channel_slot{0};
 
     // Cached device list for enumeration
     std::mutex ctrl_mutex;
@@ -725,11 +745,29 @@ static void renderSampleChannel(ta_engine* eng, SampleChannelSlot& ch, float* ou
         ch.analysis.pushInterleaved(ch.voice_buf, rendered, dev_sr);
 }
 
+static inline void bumpHighWater(std::atomic<int32_t>& hw, int32_t idx) noexcept {
+    int32_t want = idx + 1;
+    int32_t cur = hw.load(std::memory_order_relaxed);
+    while (cur < want && !hw.compare_exchange_weak(cur, want, std::memory_order_release, std::memory_order_relaxed)) {}
+}
+
+static inline bool canReapRetiring(ta_engine* eng, uint64_t retire_epoch) noexcept {
+    return eng->rt_callback_active.load(std::memory_order_acquire) == 0
+        || eng->rt_epoch.load(std::memory_order_acquire) > retire_epoch;
+}
+
 static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t total_frames, int32_t out_channels) noexcept {
-    auto t0 = std::chrono::steady_clock::now();
+    const bool sample_cpu = ((++eng->cpu_sample_counter) & 31u) == 0u;
+    std::chrono::steady_clock::time_point t0;
+    if (sample_cpu)
+        t0 = std::chrono::steady_clock::now();
+
     eng->rt_callback_active.fetch_add(1, std::memory_order_acq_rel);
 
     const int32_t dev_sr = std::max(8000, eng->active_sample_rate.load(std::memory_order_relaxed));
+    const int32_t mixer_limit = std::clamp(eng->max_mixer_slot.load(std::memory_order_acquire), 0, kMaxMixers);
+    const int32_t track_limit = std::clamp(eng->max_track_slot.load(std::memory_order_acquire), 0, kMaxTracks);
+    const int32_t chan_limit = std::clamp(eng->max_channel_slot.load(std::memory_order_acquire), 0, kMaxSampleChannels);
     uint32_t offset = 0;
 
     while (offset < total_frames) {
@@ -737,7 +775,7 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
         std::memset(eng->master_buf, 0, frames * 2 * sizeof(float));
 
         // 1. Clear active sub-mixer buffers
-        for (int32_t m = 0; m < kMaxMixers; ++m) {
+        for (int32_t m = 0; m < mixer_limit; ++m) {
             if (eng->mixers[m].state.load(std::memory_order_acquire) == kSlotActive) {
                 std::memset(eng->mixers[m].mix_buf, 0, frames * 2 * sizeof(float));
                 uint32_t fcnt = eng->mixers[m].flush_counter.load(std::memory_order_acquire);
@@ -749,7 +787,7 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
         }
 
         // 2. Render active tracks into their assigned sub-mixer (or master directly)
-        for (int32_t t = 0; t < kMaxTracks; ++t) {
+        for (int32_t t = 0; t < track_limit; ++t) {
             TrackSlot& trk = eng->tracks[t];
             if (trk.state.load(std::memory_order_acquire) != kSlotActive)
                 continue;
@@ -765,7 +803,7 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
         }
 
         // 3. Render active sample channels (hitsounds!) into their assigned sub-mixer
-        for (int32_t c = 0; c < kMaxSampleChannels; ++c) {
+        for (int32_t c = 0; c < chan_limit; ++c) {
             SampleChannelSlot& ch = eng->sample_channels[c];
             if (ch.state.load(std::memory_order_acquire) != kSlotActive)
                 continue;
@@ -781,7 +819,7 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
         }
 
         // 4. Process DSP effects on each non-root sub-mixer, tap levels, and sum into master
-        for (int32_t m = 0; m < kMaxMixers; ++m) {
+        for (int32_t m = 0; m < mixer_limit; ++m) {
             MixerSlot& mx = eng->mixers[m];
             if (mx.state.load(std::memory_order_acquire) != kSlotActive)
                 continue;
@@ -833,7 +871,7 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
         }
 
         // 5. Tap root mixer analysis if present & soft-limit master output
-        for (int32_t m = 0; m < kMaxMixers; ++m) {
+        for (int32_t m = 0; m < mixer_limit; ++m) {
             MixerSlot& mx = eng->mixers[m];
             if (mx.state.load(std::memory_order_acquire) == kSlotActive && mx.is_global_root.load(std::memory_order_relaxed)) {
                 mx.analysis.pushInterleaved(eng->master_buf, frames, dev_sr);
@@ -860,16 +898,19 @@ static void renderEngineBlock(ta_engine* eng, float* out_interleaved, uint32_t t
         offset += frames;
     }
 
+    eng->rt_epoch.fetch_add(1, std::memory_order_release);
     eng->rt_callback_active.fetch_sub(1, std::memory_order_acq_rel);
 
-    // Update DSP CPU usage rolling EMA
-    auto t1 = std::chrono::steady_clock::now();
-    double elapsed_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
-    double budget_us = (static_cast<double>(total_frames) / static_cast<double>(dev_sr)) * 1e6;
-    if (budget_us > 0.0) {
-        float inst_pct = static_cast<float>(std::clamp((elapsed_us / budget_us) * 100.0, 0.0, 100.0));
-        float prev = eng->cpu_usage_pct.load(std::memory_order_relaxed);
-        eng->cpu_usage_pct.store(prev * 0.9f + inst_pct * 0.1f, std::memory_order_relaxed);
+    // Sample DSP CPU usage once every 32 callbacks (zero steady_clock overhead on hot 3ms WASAPI path!)
+    if (sample_cpu) {
+        auto t1 = std::chrono::steady_clock::now();
+        double elapsed_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        double budget_us = (static_cast<double>(total_frames) / static_cast<double>(dev_sr)) * 1e6;
+        if (budget_us > 0.0) {
+            float inst_pct = static_cast<float>(std::clamp((elapsed_us / budget_us) * 100.0, 0.0, 100.0));
+            float prev = eng->cpu_usage_pct.load(std::memory_order_relaxed);
+            eng->cpu_usage_pct.store(prev * 0.85f + inst_pct * 0.15f, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -1026,19 +1067,33 @@ TA_API ta_engine* ta_engine_create(void) {
         eng->context_valid = true;
     }
 
-    // Start dedicated background decode thread so RT audio callback NEVER runs MP3/OGG decoding!
+    // Start dedicated background decode + async retirement thread so neither RT callback NOR AudioThread EVER stalls!
     eng->decode_stop.store(false, std::memory_order_release);
     eng->decode_thread = std::thread([eng]() {
 #if defined(_WIN32)
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 #endif
         while (!eng->decode_stop.load(std::memory_order_acquire)) {
-            for (int32_t t = 0; t < torii_audio::kMaxTracks; ++t) {
+            const int32_t track_lim = std::clamp(eng->max_track_slot.load(std::memory_order_acquire), 0, torii_audio::kMaxTracks);
+            for (int32_t t = 0; t < track_lim; ++t) {
                 auto& trk = eng->tracks[t];
-                if (trk.state.load(std::memory_order_acquire) != torii_audio::kSlotActive)
+                uint32_t st = trk.state.load(std::memory_order_acquire);
+                if (st == torii_audio::kSlotRetiring) {
+                    if (torii_audio::canReapRetiring(eng, trk.retire_epoch.load(std::memory_order_acquire))) {
+                        std::lock_guard<std::mutex> dlk(trk.decoder_mutex);
+                        if (trk.decoder_valid) {
+                            ma_decoder_uninit(&trk.decoder);
+                            trk.decoder_valid = false;
+                        }
+                        std::free(trk.raw_data);
+                        trk.raw_data = nullptr;
+                        trk.raw_size = 0;
+                        trk.resetDecoderCache();
+                        trk.state.store(torii_audio::kSlotFree, std::memory_order_release);
+                    }
                     continue;
-                if (trk.desired_playing.load(std::memory_order_acquire) == 0 &&
-                    trk.published_playing.load(std::memory_order_acquire) == 0)
+                }
+                if (st != torii_audio::kSlotActive)
                     continue;
 
                 std::unique_lock<std::mutex> lk(trk.decoder_mutex, std::try_to_lock);
@@ -1051,12 +1106,56 @@ TA_API ta_engine* ta_engine_create(void) {
                 int64_t cur_p = hint / torii_audio::TrackSlot::kPageFrames;
                 int64_t dir = trk.rt_hint_dir.load(std::memory_order_relaxed) < 0 ? -1 : 1;
 
-                // Keep [cur, cur+dir, cur+2*dir, cur-dir] warm (~1.5s sliding window)
+                // Keep [cur, cur+dir, cur+2*dir, cur-dir] warm (~740ms sliding window)
                 trk.decodePageLocked(cur_p, cur_p);
                 trk.decodePageLocked(cur_p + dir, cur_p);
-                trk.decodePageLocked(cur_p + 2 * dir, cur_p);
-                if (cur_p - dir >= 0)
-                    trk.decodePageLocked(cur_p - dir, cur_p);
+                if (trk.desired_playing.load(std::memory_order_acquire) != 0 || trk.published_playing.load(std::memory_order_acquire) != 0) {
+                    trk.decodePageLocked(cur_p + 2 * dir, cur_p);
+                    if (cur_p - dir >= 0)
+                        trk.decodePageLocked(cur_p - dir, cur_p);
+                }
+            }
+
+            // Reap retired SampleAssets asynchronously off AudioThread (zero waitRtQuiescent stalls!)
+            for (int32_t s = 0; s < torii_audio::kMaxSamples; ++s) {
+                auto& asset = eng->samples[s];
+                if (asset.state.load(std::memory_order_acquire) == torii_audio::kSlotRetiring &&
+                    torii_audio::canReapRetiring(eng, asset.retire_epoch.load(std::memory_order_acquire))) {
+                    std::free(asset.pcm_stereo);
+                    asset.pcm_stereo = nullptr;
+                    asset.pcm_bytes = 0;
+                    asset.state.store(torii_audio::kSlotFree, std::memory_order_release);
+                }
+            }
+
+            // Reap retired SampleChannelSlots & Mixers/FX asynchronously
+            const int32_t chan_lim = std::clamp(eng->max_channel_slot.load(std::memory_order_acquire), 0, torii_audio::kMaxSampleChannels);
+            for (int32_t c = 0; c < chan_lim; ++c) {
+                auto& ch = eng->sample_channels[c];
+                if (ch.state.load(std::memory_order_acquire) == torii_audio::kSlotRetiring &&
+                    torii_audio::canReapRetiring(eng, ch.retire_epoch.load(std::memory_order_acquire))) {
+                    ch.sample_idx.store(-1, std::memory_order_release);
+                    ch.state.store(torii_audio::kSlotFree, std::memory_order_release);
+                }
+            }
+
+            const int32_t mix_lim = std::clamp(eng->max_mixer_slot.load(std::memory_order_acquire), 0, torii_audio::kMaxMixers);
+            for (int32_t m = 0; m < mix_lim; ++m) {
+                auto& mx = eng->mixers[m];
+                uint32_t mst = mx.state.load(std::memory_order_acquire);
+                if (mst == torii_audio::kSlotRetiring &&
+                    torii_audio::canReapRetiring(eng, mx.retire_epoch.load(std::memory_order_acquire))) {
+                    for (int32_t f = 0; f < torii_audio::kMaxFxPerMixer; ++f)
+                        mx.fx[f].state.store(torii_audio::kSlotFree, std::memory_order_release);
+                    mx.state.store(torii_audio::kSlotFree, std::memory_order_release);
+                } else if (mst == torii_audio::kSlotActive) {
+                    for (int32_t f = 0; f < torii_audio::kMaxFxPerMixer; ++f) {
+                        if (mx.fx[f].state.load(std::memory_order_acquire) == torii_audio::kSlotRetiring &&
+                            torii_audio::canReapRetiring(eng, mx.fx[f].retire_epoch.load(std::memory_order_acquire))) {
+                            mx.fx[f].state.store(torii_audio::kSlotFree, std::memory_order_release);
+                        }
+                    }
+                }
             }
 
             std::unique_lock<std::mutex> wlk(eng->decode_wake_mutex);
@@ -1104,13 +1203,17 @@ TA_API int32_t ta_enumerate_devices(ta_engine* eng, ta_device_info* out_devices,
     if (!eng || !eng->context_valid)
         return 0;
 
-    std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
+    // Run OS COM/MMDevice enumeration WITHOUT holding ctrl_mutex so track/sample operations NEVER stall!
     ma_device_info* pPlayback = nullptr;
     ma_uint32 playbackCount = 0;
     if (ma_context_get_devices(&eng->context, &pPlayback, &playbackCount, nullptr, nullptr) != MA_SUCCESS)
         return 0;
 
-    eng->cached_devices.assign(pPlayback, pPlayback + playbackCount);
+    std::vector<ma_device_info> snapshot(pPlayback, pPlayback + playbackCount);
+    {
+        std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
+        eng->cached_devices.swap(snapshot);
+    }
 
     int32_t count = static_cast<int32_t>(playbackCount);
     if (out_devices && max_count > 0) {
@@ -1439,25 +1542,9 @@ TA_API int32_t ta_device_is_lost(ta_engine* eng) {
 
 TA_API double ta_get_output_latency_ms(ta_engine* eng) {
     if (!eng) return 0.0;
-#if defined(_WIN32)
-    // Query live WASAPI hardware padding when running on WASAPI for real-time queue visibility!
-    if (eng->device_valid && eng->context.backend == ma_backend_wasapi && eng->device.wasapi.pAudioClientPlayback) {
-        IAudioClient* client = reinterpret_cast<IAudioClient*>(eng->device.wasapi.pAudioClientPlayback);
-        UINT32 padding = 0;
-        if (SUCCEEDED(client->GetCurrentPadding(&padding))) {
-            uint32_t sr = eng->device.playback.internalSampleRate > 0 ? eng->device.playback.internalSampleRate : 48000;
-            double pad_ms = (static_cast<double>(padding) * 1000.0) / static_cast<double>(sr);
-            // In Exclusive event-driven mode, padding oscillates between 0 and periodSizeInFrames;
-            // report max(pad_ms, active_period_ms) so latency reflects true presentation delay cleanly.
-            double p_ms = eng->active_period_ms.load(std::memory_order_relaxed);
-            double reported = (eng->active_mode.load(std::memory_order_relaxed) == TA_MODE_EXCLUSIVE)
-                ? std::max(pad_ms, p_ms)
-                : (pad_ms > 0.0 ? pad_ms : eng->measured_latency_ms.load(std::memory_order_relaxed));
-            eng->measured_latency_ms.store(reported, std::memory_order_relaxed);
-            return reported;
-        }
-    }
-#endif
+    // Never issue cross-thread COM IAudioClient::GetCurrentPadding() calls against a live WASAPI Exclusive stream:
+    // miniaudio's event-driven WASAPI backend already locks the hardware buffer to the exact active period with
+    // zero queue creep, and cross-thread COM calls contend with the RT audio thread and trigger spurious flushes.
     return eng->measured_latency_ms.load(std::memory_order_relaxed);
 }
 
@@ -1492,7 +1579,6 @@ TA_API int32_t ta_get_device_sample_rate(ta_engine* eng) {
 
 TA_API int32_t ta_mixer_create(ta_engine* eng, int32_t is_global_root) {
     if (!eng) return 0;
-    std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
     for (int32_t i = 0; i < torii_audio::kMaxMixers; ++i) {
         uint32_t expected = torii_audio::kSlotFree;
         if (eng->mixers[i].state.compare_exchange_strong(expected, torii_audio::kSlotInitializing, std::memory_order_acq_rel)) {
@@ -1506,6 +1592,7 @@ TA_API int32_t ta_mixer_create(ta_engine* eng, int32_t is_global_root) {
             mx.analysis.clear();
             for (int32_t f = 0; f < torii_audio::kMaxFxPerMixer; ++f)
                 mx.fx[f].state.store(torii_audio::kSlotFree, std::memory_order_relaxed);
+            torii_audio::bumpHighWater(eng->max_mixer_slot, i);
             mx.state.store(torii_audio::kSlotActive, std::memory_order_release);
             int32_t h = torii_audio::makeHandle(torii_audio::kTagMixer, i);
             if (is_global_root)
@@ -1521,12 +1608,11 @@ TA_API void ta_mixer_destroy(ta_engine* eng, int32_t mixer_handle) {
     int32_t idx = torii_audio::handleIndex(mixer_handle);
     if (idx < 0 || idx >= torii_audio::kMaxMixers) return;
 
-    std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
-    eng->mixers[idx].state.store(torii_audio::kSlotRetiring, std::memory_order_release);
-    torii_audio::waitRtQuiescent(eng);
-    for (int32_t f = 0; f < torii_audio::kMaxFxPerMixer; ++f)
-        eng->mixers[idx].fx[f].state.store(torii_audio::kSlotFree, std::memory_order_release);
-    eng->mixers[idx].state.store(torii_audio::kSlotFree, std::memory_order_release);
+    auto& mx = eng->mixers[idx];
+    uint32_t expected = torii_audio::kSlotActive;
+    mx.retire_epoch.store(eng->rt_epoch.load(std::memory_order_acquire), std::memory_order_release);
+    if (mx.state.compare_exchange_strong(expected, torii_audio::kSlotRetiring, std::memory_order_acq_rel))
+        eng->decode_wake_cv.notify_one();
 }
 
 TA_API int32_t ta_mixer_add_channel(ta_engine* eng, int32_t mixer_handle, int32_t channel_handle, int32_t start_paused) {
@@ -1658,44 +1744,48 @@ TA_API int32_t ta_mixer_fx_remove(ta_engine* eng, int32_t mixer_handle, int32_t 
     if (midx < 0 || midx >= torii_audio::kMaxMixers || fidx < 0 || fidx >= torii_audio::kMaxFxPerMixer) return 0;
     if (mixer_handle != 0 && torii_audio::handleIndex(mixer_handle) != midx) return 0;
 
-    std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
     auto& mx = eng->mixers[midx];
+    mx.fx[fidx].retire_epoch.store(eng->rt_epoch.load(std::memory_order_acquire), std::memory_order_release);
     mx.fx[fidx].state.store(torii_audio::kSlotRetiring, std::memory_order_release);
     mx.fx_order_version.fetch_add(1, std::memory_order_release);
-    torii_audio::waitRtQuiescent(eng);
-    mx.fx[fidx].state.store(torii_audio::kSlotFree, std::memory_order_release);
+    eng->decode_wake_cv.notify_one();
     return 1;
 }
 
 /* ---------------- Tracks ---------------- */
 
-TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, int32_t quick_preview, ta_track_info* out_info) {
-    if (!eng || !data || len < 4) return 0;
-    if (out_info) std::memset(out_info, 0, sizeof(*out_info));
+TA_API void* ta_alloc_buffer(size_t len) {
+    return len > 0 ? std::malloc(len) : nullptr;
+}
 
-    int32_t fmt = torii_audio::sniffFormatFromBytes(data, len);
-    if (fmt == TA_FORMAT_UNKNOWN) return 0;
-
-    int32_t slot_idx = -1;
-    {
-        std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
-        for (int32_t i = 0; i < torii_audio::kMaxTracks; ++i) {
-            uint32_t expected = torii_audio::kSlotFree;
-            if (eng->tracks[i].state.compare_exchange_strong(expected, torii_audio::kSlotInitializing, std::memory_order_acq_rel)) {
-                slot_idx = i;
-                break;
-            }
-        }
-    }
-    if (slot_idx < 0) return 0;
-
-    auto& trk = eng->tracks[slot_idx];
-    trk.raw_data = static_cast<uint8_t*>(std::malloc(len));
-    if (!trk.raw_data) {
-        trk.state.store(torii_audio::kSlotFree, std::memory_order_release);
+static int32_t createTrackInternal(ta_engine* eng, uint8_t* owned_data, size_t len, int32_t quick_preview, ta_track_info* out_info) {
+    if (!eng || !owned_data || len < 4) {
+        std::free(owned_data);
         return 0;
     }
-    std::memcpy(trk.raw_data, data, len);
+    if (out_info) std::memset(out_info, 0, sizeof(*out_info));
+
+    int32_t fmt = torii_audio::sniffFormatFromBytes(owned_data, len);
+    if (fmt == TA_FORMAT_UNKNOWN) {
+        std::free(owned_data);
+        return 0;
+    }
+
+    int32_t slot_idx = -1;
+    for (int32_t i = 0; i < torii_audio::kMaxTracks; ++i) {
+        uint32_t expected = torii_audio::kSlotFree;
+        if (eng->tracks[i].state.compare_exchange_strong(expected, torii_audio::kSlotInitializing, std::memory_order_acq_rel)) {
+            slot_idx = i;
+            break;
+        }
+    }
+    if (slot_idx < 0) {
+        std::free(owned_data);
+        return 0;
+    }
+
+    auto& trk = eng->tracks[slot_idx];
+    trk.raw_data = owned_data;
     trk.raw_size = len;
 
     // Always decode to 2-channel float32 at source sample rate (avoids double resampling!)
@@ -1704,6 +1794,7 @@ TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, 
     if (ma_decoder_init_memory(trk.raw_data, trk.raw_size, &cfg, &trk.decoder) != MA_SUCCESS) {
         std::free(trk.raw_data);
         trk.raw_data = nullptr;
+        trk.raw_size = 0;
         trk.state.store(torii_audio::kSlotFree, std::memory_order_release);
         return 0;
     }
@@ -1711,17 +1802,10 @@ TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, 
 
     const int32_t sr = static_cast<int32_t>(trk.decoder.outputSampleRate > 0 ? trk.decoder.outputSampleRate : 44100);
     ma_uint64 total_frames = 0;
-    if (!quick_preview && fmt == TA_FORMAT_MP3) {
-        // Prescan exact MP3 frames (matches BassFlags.Prescan for exact Length & Seek on VBR/CBR MP3s!)
-        std::vector<float> tmp(4096 * 2);
-        ma_uint64 read = 0;
-        while (ma_decoder_read_pcm_frames(&trk.decoder, tmp.data(), 4096, &read) == MA_SUCCESS && read > 0)
-            total_frames += read;
-        ma_decoder_seek_to_pcm_frame(&trk.decoder, 0);
-    } else {
-        if (ma_decoder_get_length_in_pcm_frames(&trk.decoder, &total_frames) != MA_SUCCESS)
-            total_frames = 0;
-    }
+    // Fast header-only length query (~0.0001ms with Xing/VBRI or ~0.2ms header walk with pOutput=NULL, ZERO PCM decode!)
+    if (ma_decoder_get_length_in_pcm_frames(&trk.decoder, &total_frames) != MA_SUCCESS)
+        total_frames = 0;
+    (void)quick_preview;
 
     trk.format = fmt;
     trk.src_sample_rate = sr;
@@ -1735,12 +1819,12 @@ TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, 
     trk.bitrate_kbps = 0;
     if (trk.length_ms > 0.0) {
         size_t payload = len;
-        if (fmt == TA_FORMAT_MP3 && len >= 10 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
-            size_t sz = (static_cast<size_t>(data[6] & 0x7F) << 21)
-                      | (static_cast<size_t>(data[7] & 0x7F) << 14)
-                      | (static_cast<size_t>(data[8] & 0x7F) << 7)
-                      |  static_cast<size_t>(data[9] & 0x7F);
-            size_t skip = 10 + sz + ((data[5] & 0x10) ? 10 : 0);
+        if (fmt == TA_FORMAT_MP3 && len >= 10 && owned_data[0] == 'I' && owned_data[1] == 'D' && owned_data[2] == '3') {
+            size_t sz = (static_cast<size_t>(owned_data[6] & 0x7F) << 21)
+                      | (static_cast<size_t>(owned_data[7] & 0x7F) << 14)
+                      | (static_cast<size_t>(owned_data[8] & 0x7F) << 7)
+                      |  static_cast<size_t>(owned_data[9] & 0x7F);
+            size_t skip = 10 + sz + ((owned_data[5] & 0x10) ? 10 : 0);
             if (skip < len) payload = len - skip;
         }
         trk.bitrate_kbps = static_cast<int32_t>(std::llround((payload * 8.0) / trk.length_ms));
@@ -1772,18 +1856,23 @@ TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, 
     trk.rt_hint_frame.store(0, std::memory_order_relaxed);
     trk.rt_hint_dir.store(1, std::memory_order_relaxed);
 
-    // Pre-warm page 0 & 1 off the RT thread so playback starts with 0.00ms delay!
-    trk.prewarmAroundFrame(0, 1);
+    // Pre-warm ONLY page 0 (8192 frames = ~185ms, takes ~0.3ms!) so playback starts immediately;
+    // decode_thread asynchronously fills lookahead pages 1..3 in the background!
+    trk.prewarmSinglePage(0);
 
-    // Pre-configure Signalsmith Stretch off the RT thread (zero RT allocation!)
+    // Reuse existing Signalsmith Stretch allocation across TrackSlot lifecycles (0.00ms on song-select clicks!)
     int32_t dev_sr = std::max(8000, eng->active_sample_rate.load(std::memory_order_acquire));
-    trk.stretcher.presetDefault(2, static_cast<float>(dev_sr), true);
-    trk.stretcher_sr = dev_sr;
+    if (trk.stretcher_sr != dev_sr) {
+        trk.stretcher.presetDefault(2, static_cast<float>(dev_sr), true);
+        trk.stretcher_sr = dev_sr;
+    }
     trk.stretcher_active = false;
     trk.stretcher_primed = false;
     trk.stretcher_frac_accum = 0.0;
 
+    torii_audio::bumpHighWater(eng->max_track_slot, slot_idx);
     trk.state.store(torii_audio::kSlotActive, std::memory_order_release);
+    eng->decode_wake_cv.notify_one();
 
     if (out_info) {
         out_info->format = trk.format;
@@ -1798,29 +1887,30 @@ TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, 
     return torii_audio::makeHandle(torii_audio::kTagTrack, slot_idx);
 }
 
+TA_API int32_t ta_track_create_owned(ta_engine* eng, uint8_t* owned_data, size_t len, int32_t quick_preview, ta_track_info* out_info) {
+    return createTrackInternal(eng, owned_data, len, quick_preview, out_info);
+}
+
+TA_API int32_t ta_track_create(ta_engine* eng, const uint8_t* data, size_t len, int32_t quick_preview, ta_track_info* out_info) {
+    if (!eng || !data || len < 4) return 0;
+    uint8_t* copy = static_cast<uint8_t*>(std::malloc(len));
+    if (!copy) return 0;
+    std::memcpy(copy, data, len);
+    return createTrackInternal(eng, copy, len, quick_preview, out_info);
+}
+
 TA_API void ta_track_destroy(ta_engine* eng, int32_t track_handle) {
     if (!eng || torii_audio::handleTag(track_handle) != torii_audio::kTagTrack) return;
     int32_t idx = torii_audio::handleIndex(track_handle);
     if (idx < 0 || idx >= torii_audio::kMaxTracks) return;
 
-    std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
     auto& trk = eng->tracks[idx];
-    if (trk.state.load(std::memory_order_acquire) != torii_audio::kSlotActive) return;
-
-    trk.state.store(torii_audio::kSlotRetiring, std::memory_order_release);
-    torii_audio::waitRtQuiescent(eng);
-    {
-        std::lock_guard<std::mutex> dlk(trk.decoder_mutex);
-        if (trk.decoder_valid) {
-            ma_decoder_uninit(&trk.decoder);
-            trk.decoder_valid = false;
-        }
-        std::free(trk.raw_data);
-        trk.raw_data = nullptr;
-        trk.raw_size = 0;
-        trk.resetDecoderCache();
-    }
-    trk.state.store(torii_audio::kSlotFree, std::memory_order_release);
+    trk.desired_playing.store(0, std::memory_order_release);
+    trk.published_playing.store(0, std::memory_order_release);
+    trk.retire_epoch.store(eng->rt_epoch.load(std::memory_order_acquire), std::memory_order_release);
+    uint32_t expected = torii_audio::kSlotActive;
+    if (trk.state.compare_exchange_strong(expected, torii_audio::kSlotRetiring, std::memory_order_acq_rel))
+        eng->decode_wake_cv.notify_one();
 }
 
 TA_API int32_t ta_track_play(ta_engine* eng, int32_t track_handle) {
@@ -1867,12 +1957,13 @@ TA_API int32_t ta_track_seek_ms(ta_engine* eng, int32_t track_handle, double tar
     double clamped = std::clamp(target_ms, 0.0, trk.last_seekable_ms);
     bool exact_in_range = (target_ms >= 0.0 && target_ms <= trk.last_seekable_ms && trk.total_frames > 0);
 
-    // Pre-warm sliding PCM pages around sought frame off the RT thread (zero RT stall!)
+    // Pre-warm ONLY the target page (~0.3ms) so seek starts immediately without stalling AudioThread;
+    // decode_thread asynchronously warms adjacent pages immediately upon notify!
     int64_t seek_frame = static_cast<int64_t>(clamped * 0.001 * trk.src_sample_rate);
     int32_t dir = trk.target_frequency.load(std::memory_order_relaxed) < 0.0 ? -1 : 1;
     trk.rt_hint_frame.store(seek_frame, std::memory_order_relaxed);
     trk.rt_hint_dir.store(dir, std::memory_order_relaxed);
-    trk.prewarmAroundFrame(seek_frame, dir);
+    trk.prewarmSinglePage(seek_frame);
 
     // Publish immediately so CurrentTime reflects the sought position BEFORE the next audio tick!
     trk.seek_target_ms.store(clamped, std::memory_order_relaxed);
@@ -1935,36 +2026,52 @@ TA_API int32_t ta_sample_create(ta_engine* eng, const uint8_t* data, size_t len,
         return 0;
 
     const int32_t sr = static_cast<int32_t>(dec.outputSampleRate > 0 ? dec.outputSampleRate : 44100);
-    std::vector<float> pcm;
     ma_uint64 est = 0;
-    if (ma_decoder_get_length_in_pcm_frames(&dec, &est) == MA_SUCCESS && est > 0 && est < 50000000)
-        pcm.reserve(static_cast<size_t>(est) * 2);
-
-    float chunk[4096 * 2];
-    ma_uint64 read = 0;
-    while (ma_decoder_read_pcm_frames(&dec, chunk, 4096, &read) == MA_SUCCESS && read > 0) {
-        pcm.insert(pcm.end(), chunk, chunk + read * 2);
-    }
-    ma_decoder_uninit(&dec);
-
-    const int64_t total_frames = static_cast<int64_t>(pcm.size() / 2);
-    const size_t pcm_bytes = pcm.size() * sizeof(float);
     float* owned_pcm = nullptr;
-    if (pcm_bytes > 0) {
-        owned_pcm = static_cast<float*>(std::malloc(pcm_bytes));
-        if (!owned_pcm) return 0;
-        std::memcpy(owned_pcm, pcm.data(), pcm_bytes);
+    int64_t total_frames = 0;
+    size_t pcm_bytes = 0;
+
+    // Fast single-allocation decode when frame count is known (WAV/FLAC/OGG/Xing MP3 -> zero vector + zero extra memcpy!)
+    if (ma_decoder_get_length_in_pcm_frames(&dec, &est) == MA_SUCCESS && est > 0 && est < 50000000) {
+        size_t alloc_bytes = static_cast<size_t>(est) * 2 * sizeof(float);
+        owned_pcm = static_cast<float*>(std::malloc(alloc_bytes));
+        if (!owned_pcm) {
+            ma_decoder_uninit(&dec);
+            return 0;
+        }
+        ma_uint64 read_total = 0;
+        while (read_total < est) {
+            ma_uint64 got = 0;
+            if (ma_decoder_read_pcm_frames(&dec, owned_pcm + read_total * 2, est - read_total, &got) != MA_SUCCESS || got == 0)
+                break;
+            read_total += got;
+        }
+        ma_decoder_uninit(&dec);
+        total_frames = static_cast<int64_t>(read_total);
+        pcm_bytes = static_cast<size_t>(read_total) * 2 * sizeof(float);
+    } else {
+        std::vector<float> pcm;
+        float chunk[4096 * 2];
+        ma_uint64 read = 0;
+        while (ma_decoder_read_pcm_frames(&dec, chunk, 4096, &read) == MA_SUCCESS && read > 0) {
+            pcm.insert(pcm.end(), chunk, chunk + read * 2);
+        }
+        ma_decoder_uninit(&dec);
+        total_frames = static_cast<int64_t>(pcm.size() / 2);
+        pcm_bytes = pcm.size() * sizeof(float);
+        if (pcm_bytes > 0) {
+            owned_pcm = static_cast<float*>(std::malloc(pcm_bytes));
+            if (!owned_pcm) return 0;
+            std::memcpy(owned_pcm, pcm.data(), pcm_bytes);
+        }
     }
 
     int32_t slot_idx = -1;
-    {
-        std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
-        for (int32_t i = 0; i < torii_audio::kMaxSamples; ++i) {
-            uint32_t expected = torii_audio::kSlotFree;
-            if (eng->samples[i].state.compare_exchange_strong(expected, torii_audio::kSlotInitializing, std::memory_order_acq_rel)) {
-                slot_idx = i;
-                break;
-            }
+    for (int32_t i = 0; i < torii_audio::kMaxSamples; ++i) {
+        uint32_t expected = torii_audio::kSlotFree;
+        if (eng->samples[i].state.compare_exchange_strong(expected, torii_audio::kSlotInitializing, std::memory_order_acq_rel)) {
+            slot_idx = i;
+            break;
         }
     }
     if (slot_idx < 0) {
@@ -2007,12 +2114,12 @@ TA_API void ta_sample_destroy(ta_engine* eng, int32_t sample_handle) {
     int32_t idx = torii_audio::handleIndex(sample_handle);
     if (idx < 0 || idx >= torii_audio::kMaxSamples) return;
 
-    std::lock_guard<std::mutex> lock(eng->ctrl_mutex);
     auto& asset = eng->samples[idx];
     if (asset.state.load(std::memory_order_acquire) != torii_audio::kSlotActive) return;
 
-    // Stop any sample channels referencing this asset before freeing PCM memory
-    for (int32_t c = 0; c < torii_audio::kMaxSampleChannels; ++c) {
+    // Stop any sample channels referencing this asset before retiring PCM memory asynchronously
+    const int32_t chan_lim = std::clamp(eng->max_channel_slot.load(std::memory_order_acquire), 0, torii_audio::kMaxSampleChannels);
+    for (int32_t c = 0; c < chan_lim; ++c) {
         if (eng->sample_channels[c].state.load(std::memory_order_acquire) == torii_audio::kSlotActive &&
             eng->sample_channels[c].sample_idx.load(std::memory_order_acquire) == idx) {
             eng->sample_channels[c].concurrency_claimed.store(0, std::memory_order_release);
@@ -2022,12 +2129,10 @@ TA_API void ta_sample_destroy(ta_engine* eng, int32_t sample_handle) {
         }
     }
 
-    asset.state.store(torii_audio::kSlotRetiring, std::memory_order_release);
-    torii_audio::waitRtQuiescent(eng);
-    std::free(asset.pcm_stereo);
-    asset.pcm_stereo = nullptr;
-    asset.pcm_bytes = 0;
-    asset.state.store(torii_audio::kSlotFree, std::memory_order_release);
+    asset.retire_epoch.store(eng->rt_epoch.load(std::memory_order_acquire), std::memory_order_release);
+    uint32_t expected = torii_audio::kSlotActive;
+    if (asset.state.compare_exchange_strong(expected, torii_audio::kSlotRetiring, std::memory_order_acq_rel))
+        eng->decode_wake_cv.notify_one();
 }
 
 TA_API int32_t ta_sample_channel_create(ta_engine* eng, int32_t sample_handle, int32_t mixer_handle) {
@@ -2038,30 +2143,39 @@ TA_API int32_t ta_sample_channel_create(ta_engine* eng, int32_t sample_handle, i
 
     for (int32_t i = 0; i < torii_audio::kMaxSampleChannels; ++i) {
         uint32_t expected = torii_audio::kSlotFree;
-        if (eng->sample_channels[i].state.compare_exchange_strong(expected, torii_audio::kSlotInitializing, std::memory_order_acq_rel)) {
-            auto& ch = eng->sample_channels[i];
-            ch.sample_idx.store(sidx, std::memory_order_relaxed);
-            ch.mixer_handle.store(mixer_handle, std::memory_order_relaxed);
-            ch.target_volume.store(1.0f, std::memory_order_relaxed);
-            ch.target_balance.store(0.0f, std::memory_order_relaxed);
-            ch.target_frequency.store(1.0, std::memory_order_relaxed);
-            ch.looping.store(0, std::memory_order_relaxed);
-            ch.play_seq.store(0, std::memory_order_relaxed);
-            ch.stop_seq.store(0, std::memory_order_relaxed);
-            ch.applied_play_seq = 0;
-            ch.applied_stop_seq = 0;
-            ch.rt_state.store(TA_STATE_STOPPED, std::memory_order_relaxed);
-            ch.logical_state.store(TA_STATE_STOPPED, std::memory_order_relaxed);
-            ch.concurrency_claimed.store(0, std::memory_order_relaxed);
-            ch.start_order.store(0, std::memory_order_relaxed);
-            ch.phase = 0.0;
-            ch.fading_out = false;
-            ch.fade_out_samples = 0;
-            ch.paused_by_zero_freq = false;
-            ch.analysis.clear();
-            ch.state.store(torii_audio::kSlotActive, std::memory_order_release);
-            return torii_audio::makeHandle(torii_audio::kTagSampleChannel, i);
+        if (!eng->sample_channels[i].state.compare_exchange_strong(expected, torii_audio::kSlotInitializing, std::memory_order_acq_rel)) {
+            if (expected == torii_audio::kSlotRetiring &&
+                torii_audio::canReapRetiring(eng, eng->sample_channels[i].retire_epoch.load(std::memory_order_acquire))) {
+                uint32_t ret = torii_audio::kSlotRetiring;
+                if (!eng->sample_channels[i].state.compare_exchange_strong(ret, torii_audio::kSlotInitializing, std::memory_order_acq_rel))
+                    continue;
+            } else {
+                continue;
+            }
         }
+        auto& ch = eng->sample_channels[i];
+        ch.sample_idx.store(sidx, std::memory_order_relaxed);
+        ch.mixer_handle.store(mixer_handle, std::memory_order_relaxed);
+        ch.target_volume.store(1.0f, std::memory_order_relaxed);
+        ch.target_balance.store(0.0f, std::memory_order_relaxed);
+        ch.target_frequency.store(1.0, std::memory_order_relaxed);
+        ch.looping.store(0, std::memory_order_relaxed);
+        ch.play_seq.store(0, std::memory_order_relaxed);
+        ch.stop_seq.store(0, std::memory_order_relaxed);
+        ch.applied_play_seq = 0;
+        ch.applied_stop_seq = 0;
+        ch.rt_state.store(TA_STATE_STOPPED, std::memory_order_relaxed);
+        ch.logical_state.store(TA_STATE_STOPPED, std::memory_order_relaxed);
+        ch.concurrency_claimed.store(0, std::memory_order_relaxed);
+        ch.start_order.store(0, std::memory_order_relaxed);
+        ch.phase = 0.0;
+        ch.fading_out = false;
+        ch.fade_out_samples = 0;
+        ch.paused_by_zero_freq = false;
+        ch.analysis.clear();
+        torii_audio::bumpHighWater(eng->max_channel_slot, i);
+        ch.state.store(torii_audio::kSlotActive, std::memory_order_release);
+        return torii_audio::makeHandle(torii_audio::kTagSampleChannel, i);
     }
     return 0;
 }
@@ -2155,13 +2269,13 @@ TA_API void ta_sample_channel_destroy(ta_engine* eng, int32_t channel_handle) {
     auto& ch = eng->sample_channels[idx];
     if (ch.state.load(std::memory_order_acquire) != torii_audio::kSlotActive) return;
 
+    // 100% LOCK-FREE, ZERO-SLEEP retirement: never blocks AudioThread or Exclusive RT callback!
     ch.concurrency_claimed.store(0, std::memory_order_release);
     ch.logical_state.store(TA_STATE_STOPPED, std::memory_order_release);
     ch.rt_state.store(TA_STATE_STOPPED, std::memory_order_release);
-    ch.state.store(torii_audio::kSlotRetiring, std::memory_order_release);
-    torii_audio::waitRtQuiescent(eng);
-    ch.sample_idx.store(-1, std::memory_order_release);
-    ch.state.store(torii_audio::kSlotFree, std::memory_order_release);
+    ch.retire_epoch.store(eng->rt_epoch.load(std::memory_order_acquire), std::memory_order_release);
+    uint32_t expected = torii_audio::kSlotActive;
+    ch.state.compare_exchange_strong(expected, torii_audio::kSlotRetiring, std::memory_order_acq_rel);
 }
 
 /* ---------------- Channel Analysis ---------------- */

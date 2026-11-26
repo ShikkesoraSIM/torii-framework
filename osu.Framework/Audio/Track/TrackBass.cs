@@ -92,23 +92,27 @@ namespace osu.Framework.Audio.Track
         {
             info = default;
 
-            byte[] bytes;
+            byte* nativePtr;
+            nuint length;
             try
             {
-                bytes = ToriiAudioEngine.ReadStreamBytes(data);
+                if (!ToriiAudioEngine.ReadStreamToNative(data, out nativePtr, out length))
+                    return 0;
             }
             catch
             {
                 return 0;
             }
 
-            if (bytes.Length < 4)
-                return 0;
-
-            fixed (byte* ptr = bytes)
+            if (length < 4 || nativePtr == null)
             {
-                return ToriiAudioNative.ta_track_create(ToriiAudioEngine.Handle, ptr, (nuint)bytes.Length, quick ? 1 : 0, out info);
+                if (nativePtr != null)
+                    ToriiAudioNative.ta_free_buffer(nativePtr);
+                return 0;
             }
+
+            // Ownership of nativePtr transfers to ta_track_create_owned (freed internally on failure or destroy)
+            return ToriiAudioNative.ta_track_create_owned(ToriiAudioEngine.Handle, nativePtr, length, quick ? 1 : 0, out info);
         }
 
         void IBassAudio.UpdateDevice(int deviceIndex)

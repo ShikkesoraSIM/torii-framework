@@ -213,7 +213,9 @@ TA_API int32_t ta_mixer_fx_remove(ta_engine* engine, int32_t mixer_handle, int32
 
 /* ---------------- Tracks ---------------- */
 
+TA_API void* ta_alloc_buffer(size_t len);
 TA_API int32_t ta_track_create(ta_engine* engine, const uint8_t* data, size_t len, int32_t quick_preview, ta_track_info* out_info);
+TA_API int32_t ta_track_create_owned(ta_engine* engine, uint8_t* owned_data, size_t len, int32_t quick_preview, ta_track_info* out_info);
 TA_API void ta_track_destroy(ta_engine* engine, int32_t track_handle);
 TA_API int32_t ta_track_play(ta_engine* engine, int32_t track_handle);
 TA_API int32_t ta_track_pause(ta_engine* engine, int32_t track_handle, int32_t flush_mixer);

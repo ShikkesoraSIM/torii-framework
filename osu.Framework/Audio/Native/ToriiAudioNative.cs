@@ -314,7 +314,16 @@ namespace osu.Framework.Audio.Native
         /* ---------------- Tracks ---------------- */
 
         [DllImport(lib_name, CallingConvention = CallingConvention.Cdecl)]
+        public static extern byte* ta_alloc_buffer(nuint len);
+
+        [DllImport(lib_name, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void ta_free_buffer(void* ptr);
+
+        [DllImport(lib_name, CallingConvention = CallingConvention.Cdecl)]
         public static extern int ta_track_create(IntPtr engine, byte* data, nuint len, int quickPreview, out TaTrackInfo outInfo);
+
+        [DllImport(lib_name, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int ta_track_create_owned(IntPtr engine, byte* ownedData, nuint len, int quickPreview, out TaTrackInfo outInfo);
 
         [DllImport(lib_name, CallingConvention = CallingConvention.Cdecl)]
         public static extern void ta_track_destroy(IntPtr engine, int trackHandle);
@@ -441,6 +450,116 @@ namespace osu.Framework.Audio.Native
         {
             ToriiAudioNative.ta_device_init(Handle, NO_SOUND_DEVICE, (int)TaDeviceMode.NoSound, 0, 0, out _, null, 0);
             CurrentDevice = NO_SOUND_DEVICE;
+        }
+
+        /// <summary>
+        /// Zero-LOH helper: streams a .NET <see cref="Stream"/> directly into a native buffer using a small pooled
+        /// 64 KB staging array so loading 5-15 MB MP3/OGG tracks causes ZERO Large Object Heap GC pressure!
+        /// Caller owns the returned pointer until passed to <c>ta_track_create_owned</c> or freed with <c>ta_free_buffer</c>.
+        /// </summary>
+        internal static unsafe bool ReadStreamToNative(Stream stream, out byte* nativePtr, out nuint length)
+        {
+            nativePtr = null;
+            length = 0;
+
+            if (stream is MemoryStream ms && ms.TryGetBuffer(out ArraySegment<byte> seg) && seg.Count > 0)
+            {
+                byte* dst = ToriiAudioNative.ta_alloc_buffer((nuint)seg.Count);
+                if (dst == null)
+                    return false;
+
+                fixed (byte* src = &seg.Array![seg.Offset])
+                    Buffer.MemoryCopy(src, dst, seg.Count, seg.Count);
+
+                nativePtr = dst;
+                length = (nuint)seg.Count;
+                return true;
+            }
+
+            if (stream.CanSeek)
+                stream.Seek(0, SeekOrigin.Begin);
+
+            const int chunk_size = 65536;
+            byte[] chunk = System.Buffers.ArrayPool<byte>.Shared.Rent(chunk_size);
+            try
+            {
+                if (stream.CanSeek && stream.Length > 0 && stream.Length < int.MaxValue)
+                {
+                    int cap = (int)stream.Length;
+                    byte* dst = ToriiAudioNative.ta_alloc_buffer((nuint)cap);
+                    if (dst == null)
+                        return false;
+
+                    int total = 0;
+                    while (total < cap)
+                    {
+                        int n = stream.Read(chunk, 0, Math.Min(chunk_size, cap - total));
+                        if (n <= 0)
+                            break;
+                        fixed (byte* src = chunk)
+                            Buffer.MemoryCopy(src, dst + total, cap - total, n);
+                        total += n;
+                    }
+
+                    if (total < 4)
+                    {
+                        ToriiAudioNative.ta_free_buffer(dst);
+                        return false;
+                    }
+
+                    nativePtr = dst;
+                    length = (nuint)total;
+                    return true;
+                }
+                else
+                {
+                    nuint cap = 65536;
+                    byte* dst = ToriiAudioNative.ta_alloc_buffer(cap);
+                    if (dst == null)
+                        return false;
+
+                    nuint total = 0;
+                    while (true)
+                    {
+                        int n = stream.Read(chunk, 0, chunk_size);
+                        if (n <= 0)
+                            break;
+
+                        if (total + (nuint)n > cap)
+                        {
+                            nuint newCap = Math.Max(cap * 2, total + (nuint)n);
+                            byte* grown = ToriiAudioNative.ta_alloc_buffer(newCap);
+                            if (grown == null)
+                            {
+                                ToriiAudioNative.ta_free_buffer(dst);
+                                return false;
+                            }
+                            Buffer.MemoryCopy(dst, grown, (long)newCap, (long)total);
+                            ToriiAudioNative.ta_free_buffer(dst);
+                            dst = grown;
+                            cap = newCap;
+                        }
+
+                        fixed (byte* src = chunk)
+                            Buffer.MemoryCopy(src, dst + total, (long)(cap - total), n);
+                        total += (nuint)n;
+                    }
+
+                    if (total < 4)
+                    {
+                        ToriiAudioNative.ta_free_buffer(dst);
+                        return false;
+                    }
+
+                    nativePtr = dst;
+                    length = total;
+                    return true;
+                }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(chunk);
+            }
         }
 
         /// <summary>

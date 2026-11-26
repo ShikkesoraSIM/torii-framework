@@ -220,7 +220,7 @@ namespace osu.Framework.Audio
                         {
                             if (CheckForDeviceChanges(audioDevices) || ToriiAudioNative.ta_device_is_lost(ToriiAudioEngine.Handle) != 0)
                                 syncAudioDevices();
-                            Thread.Sleep(1000);
+                            Thread.Sleep(2500);
                         }
                         catch
                         {

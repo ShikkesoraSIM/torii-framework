@@ -19,7 +19,7 @@ namespace osu.Framework.Graphics.Containers
 {
     public partial class BufferedContainer<T>
     {
-        private class BufferedContainerDrawNode : BufferedDrawNode, ICompositeDrawNode
+        protected class BufferedContainerDrawNode : BufferedDrawNode, ICompositeDrawNode
         {
             protected new BufferedContainer<T> Source => (BufferedContainer<T>)base.Source;
 
@@ -49,6 +49,7 @@ namespace osu.Framework.Graphics.Containers
                 base.ApplyState();
 
                 updateVersion = Source.updateVersion;
+                trackSubtreeChanges = Source.TrackSubtreeChanges;
 
                 effectColour = Source.EffectColour;
                 effectBlending = Source.DrawEffectBlending;
@@ -65,6 +66,21 @@ namespace osu.Framework.Graphics.Containers
             }
 
             protected override long GetDrawVersion() => updateVersion;
+
+            private bool trackSubtreeChanges;
+
+            /// <summary>
+            /// Requests a redraw from the update thread while generating this draw node (see <see cref="BufferedContainer{T}.TrackSubtreeChanges"/>).
+            /// </summary>
+            internal void ForceRedraw(long version) => updateVersion = version;
+
+            /// <summary>
+            /// Whether this node was generated without its children (see <see cref="BufferedContainer{T}.Frozen"/>), which then can't be
+            /// drawn into the buffer.
+            /// </summary>
+            internal bool ChildrenOutdated;
+
+            protected override bool CanRedraw => !ChildrenOutdated;
 
             protected override void PopulateContents(IRenderer renderer)
             {
@@ -158,7 +174,8 @@ namespace osu.Framework.Graphics.Containers
                 set => Child.Children = value;
             }
 
-            public bool AddChildDrawNodes => RequiresRedraw;
+            // When tracking the subtree, children's draw nodes are always generated, which is how their changes are found.
+            public bool AddChildDrawNodes => trackSubtreeChanges || RequiresRedraw;
 
             protected override void Dispose(bool isDisposing)
             {
@@ -184,7 +201,7 @@ namespace osu.Framework.Graphics.Containers
             }
         }
 
-        private class BufferedContainerDrawNodeSharedData : BufferedDrawNodeSharedData
+        protected class BufferedContainerDrawNodeSharedData : BufferedDrawNodeSharedData
         {
             public BufferedContainerDrawNodeSharedData(TexturePixelFormat mainBufferTextureFormat, RenderBufferFormat[] mainBufferFormats, bool pixelSnapping, bool clipToRootNode)
                 : base(2, mainBufferTextureFormat, mainBufferFormats, pixelSnapping, clipToRootNode)

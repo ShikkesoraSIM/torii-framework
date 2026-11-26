@@ -58,7 +58,37 @@ namespace osu.Framework.Graphics.OpenGL
         /// </summary>
         public bool IsEmbedded { get; private set; }
 
-        private int backbufferFramebuffer;
+        /// <summary>
+        /// The framebuffer drawn to when no other framebuffer is bound (the "back buffer").
+        /// </summary>
+        /// <remarks>
+        /// Torii: can be redirected before <see cref="BeginFrame"/> to render a frame directly into an external target,
+        /// e.g. an OpenXR swapchain image.
+        /// </remarks>
+        internal int BackbufferFramebuffer { get; set; }
+
+        /// <summary>
+        /// Torii: a framebuffer temporarily standing in for the back buffer, used by <see cref="Containers.RenderTargetRedirectContainer"/>.
+        /// Reset at the start of every frame.
+        /// </summary>
+        internal int? BackbufferRedirect { get; private set; }
+
+        private int currentBackbuffer => BackbufferRedirect ?? BackbufferFramebuffer;
+
+        /// <summary>
+        /// Redirects back buffer drawing to <paramref name="framebuffer"/> (or back to the real back buffer when null).
+        /// </summary>
+        internal void SetBackbufferRedirect(int? framebuffer)
+        {
+            if (framebuffer == BackbufferRedirect)
+                return;
+
+            FlushCurrentBatch(FlushBatchSource.SetFrameBuffer);
+            BackbufferRedirect = framebuffer;
+
+            if (UsingBackbuffer)
+                GL.BindFramebuffer(FramebufferTarget.Framebuffer, currentBackbuffer);
+        }
 
         private readonly Dictionary<string, IGLUniformBuffer> boundUniformBuffers = new Dictionary<string, IGLUniformBuffer>();
         private bool? lastBlendingEnabledState;
@@ -72,7 +102,7 @@ namespace osu.Framework.Graphics.OpenGL
             openGLSurface = (IOpenGLGraphicsSurface)graphicsSurface;
             openGLSurface.MakeCurrent(openGLSurface.WindowContext);
 
-            backbufferFramebuffer = openGLSurface.BackbufferFramebuffer ?? 0;
+            BackbufferFramebuffer = openGLSurface.BackbufferFramebuffer ?? 0;
 
             string version = GL.GetString(StringName.Version);
             IsEmbedded = version.Contains("OpenGL ES"); // As defined by https://www.khronos.org/registry/OpenGL-Refpages/es2.0/xhtml/glGetString.xml
@@ -118,6 +148,7 @@ namespace osu.Framework.Graphics.OpenGL
             lastBlendingEnabledState = null;
             lastBoundVertexArray = 0;
             boundUniformBuffers.Clear();
+            BackbufferRedirect = null;
 
             // Seems to be required on some drivers as the context is lost from the draw thread.
             MakeCurrent();
@@ -231,7 +262,7 @@ namespace osu.Framework.Graphics.OpenGL
         }
 
         protected override void SetFrameBufferImplementation(IFrameBuffer? frameBuffer) =>
-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, ((GLFrameBuffer?)frameBuffer)?.FrameBuffer ?? backbufferFramebuffer);
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, ((GLFrameBuffer?)frameBuffer)?.FrameBuffer ?? currentBackbuffer);
 
         protected override void DeleteFrameBufferImplementation(IFrameBuffer frameBuffer)
             => ScheduleDisposal(static f => GL.DeleteFramebuffer(f.FrameBuffer), (GLFrameBuffer)frameBuffer);

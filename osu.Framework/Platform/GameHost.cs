@@ -184,6 +184,16 @@ namespace osu.Framework.Platform
         /// </summary>
         protected abstract IWindow CreateWindow(GraphicsSurfaceType preferredSurface);
 
+        /// <summary>
+        /// Torii: returns a render target which part of the draw tree can be redirected into (see
+        /// <see cref="Graphics.Containers.RenderTargetRedirectContainer"/>), such as a separate compositor layer in an immersive XR session.
+        /// </summary>
+        /// <param name="name">The name of the target, e.g. "background". Requesting the same name again returns the same target.</param>
+        /// <returns>The target, or <see langword="null"/> if this host doesn't provide external targets.</returns>
+#nullable enable
+        public virtual ExternalRenderTarget? GetExternalRenderTarget(string name) => null;
+#nullable disable
+
         protected abstract Clipboard CreateClipboard();
 
         protected virtual ReadableKeyCombinationProvider CreateReadableKeyCombinationProvider() => new ReadableKeyCombinationProvider();
@@ -436,7 +446,7 @@ namespace osu.Framework.Platform
                 // 1. When the exceptioning thread is GameThread.Input.
                 // 2. When the game is running in single-threaded mode. Single threaded stacks will be displayed correctly at the point of rethrow.
                 // 3. When the CLR is terminating. We can't guarantee the input thread is still running, and may delay application termination.
-                if (isTerminating || (sender is GameThread && (sender == InputThread || executionMode.Value == ExecutionMode.SingleThread)))
+                if (isTerminating || (sender is GameThread && (sender == InputThread || effectiveExecutionMode == ExecutionMode.SingleThread)))
                     return;
 
                 // The process can deadlock in an extreme case such as the input thread dying before the delegate executes, so wait up to a maximum of 10 seconds at all times.
@@ -1254,6 +1264,14 @@ namespace osu.Framework.Platform
 
         private Bindable<string> threadLocale;
 
+        /// <summary>
+        /// Torii: an execution mode this host requires regardless of <see cref="FrameworkSetting.ExecutionMode"/> (which is left untouched,
+        /// so the user's choice still applies to other hosts sharing the configuration). Null to follow the setting.
+        /// </summary>
+        protected virtual ExecutionMode? ForcedExecutionMode => null;
+
+        private ExecutionMode effectiveExecutionMode => ForcedExecutionMode ?? executionMode.Value;
+
         protected virtual void SetupConfig(IDictionary<FrameworkSetting, object> defaultOverrides)
         {
             if (!defaultOverrides.ContainsKey(FrameworkSetting.WindowMode))
@@ -1275,7 +1293,7 @@ namespace osu.Framework.Platform
             executionMode = Config.GetBindable<ExecutionMode>(FrameworkSetting.ExecutionMode);
             executionMode.BindValueChanged(e =>
             {
-                threadRunner.ExecutionMode = e.NewValue;
+                threadRunner.ExecutionMode = ForcedExecutionMode ?? e.NewValue;
                 updateFrameSyncMode();
             }, true);
 
@@ -1467,8 +1485,18 @@ namespace osu.Framework.Platform
                     updateLimiter = toriiHz;
             }
 
+            AdjustFrameLimiters(ref drawLimiter, ref updateLimiter);
+
             MaximumDrawHz = drawLimiter;
-            MaximumUpdateHz = executionMode.Value == ExecutionMode.SingleThread ? drawLimiter : updateLimiter;
+            MaximumUpdateHz = effectiveExecutionMode == ExecutionMode.SingleThread ? drawLimiter : updateLimiter;
+        }
+
+        /// <summary>
+        /// Torii: lets a host which paces its frames some other way than by the window's display (e.g. by a headset) change the limits
+        /// derived from <see cref="FrameworkSetting.FrameSync"/>, in Hz. In single-threaded execution updates run at the draw limit.
+        /// </summary>
+        protected virtual void AdjustFrameLimiters(ref double drawLimiter, ref double updateLimiter)
+        {
         }
 
         // torii: los renderers deferred graban command buffers por frame de update; si el update corre

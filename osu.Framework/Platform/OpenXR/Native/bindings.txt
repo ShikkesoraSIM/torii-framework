@@ -1,0 +1,231 @@
+# OpenXR surface bound by XrNative.g.cs. Regenerate with generate.py after editing.
+# Format: <enum|flags|struct|function> <name>
+
+enum XrResult
+enum XrStructureType
+enum XrFormFactor
+enum XrViewConfigurationType
+enum XrEnvironmentBlendMode
+enum XrReferenceSpaceType
+enum XrSessionState
+enum XrActionType
+enum XrEyeVisibility
+
+flags XrSwapchainCreateFlags
+flags XrSwapchainUsageFlags
+flags XrCompositionLayerFlags
+flags XrSpaceLocationFlags
+flags XrViewStateFlags
+
+# Math
+struct XrVector2f
+struct XrVector3f
+struct XrQuaternionf
+struct XrPosef
+struct XrExtent2Df
+struct XrExtent2Di
+struct XrOffset2Di
+struct XrRect2Di
+struct XrFovf
+
+# Instance / system
+struct XrApiLayerProperties
+struct XrExtensionProperties
+struct XrApplicationInfo
+struct XrInstanceCreateInfo
+struct XrInstanceProperties
+struct XrSystemGetInfo
+struct XrSystemGraphicsProperties
+struct XrSystemTrackingProperties
+struct XrSystemProperties
+
+# Session / events
+struct XrSessionCreateInfo
+struct XrSessionBeginInfo
+struct XrEventDataBaseHeader
+struct XrEventDataBuffer
+struct XrEventDataEventsLost
+struct XrEventDataInstanceLossPending
+struct XrEventDataSessionStateChanged
+struct XrEventDataReferenceSpaceChangePending
+struct XrEventDataInteractionProfileChanged
+
+# Spaces
+struct XrReferenceSpaceCreateInfo
+struct XrSpaceLocation
+
+# Views / swapchains / frames / layers
+struct XrViewConfigurationView
+struct XrSwapchainCreateInfo
+struct XrSwapchainImageBaseHeader
+struct XrSwapchainImageAcquireInfo
+struct XrSwapchainImageWaitInfo
+struct XrSwapchainImageReleaseInfo
+struct XrSwapchainSubImage
+struct XrFrameWaitInfo
+struct XrFrameState
+struct XrFrameBeginInfo
+struct XrFrameEndInfo
+struct XrCompositionLayerBaseHeader
+struct XrCompositionLayerQuad
+struct XrCompositionLayerProjectionView
+struct XrCompositionLayerProjection
+struct XrCompositionLayerCylinderKHR
+struct XrCompositionLayerEquirect2KHR
+struct XrViewLocateInfo
+struct XrViewState
+struct XrView
+
+# Actions
+struct XrActionSetCreateInfo
+struct XrActionCreateInfo
+struct XrActionSuggestedBinding
+struct XrInteractionProfileSuggestedBinding
+struct XrSessionActionSetsAttachInfo
+struct XrActiveActionSet
+struct XrActionsSyncInfo
+struct XrActionStateGetInfo
+struct XrActionStateBoolean
+struct XrActionStateFloat
+struct XrActionStateVector2f
+struct XrActionStatePose
+struct XrActionSpaceCreateInfo
+struct XrHapticActionInfo
+struct XrHapticBaseHeader
+struct XrHapticVibration
+
+# Android / OpenGL ES (XR_KHR_android_create_instance, XR_KHR_loader_init_android, XR_KHR_opengl_es_enable)
+struct XrInstanceCreateInfoAndroidKHR
+struct XrLoaderInitInfoBaseHeaderKHR
+struct XrLoaderInitInfoAndroidKHR
+struct XrGraphicsBindingOpenGLESAndroidKHR
+struct XrSwapchainImageOpenGLESKHR
+struct XrGraphicsRequirementsOpenGLESKHR
+
+# Core functions
+function xrEnumerateApiLayerProperties
+function xrEnumerateInstanceExtensionProperties
+function xrCreateInstance
+function xrDestroyInstance
+function xrGetInstanceProperties
+function xrPollEvent
+function xrResultToString
+function xrStringToPath
+function xrPathToString
+function xrGetSystem
+function xrGetSystemProperties
+function xrEnumerateEnvironmentBlendModes
+function xrCreateSession
+function xrDestroySession
+function xrBeginSession
+function xrEndSession
+function xrRequestExitSession
+function xrCreateReferenceSpace
+function xrDestroySpace
+function xrLocateSpace
+function xrEnumerateViewConfigurationViews
+function xrEnumerateSwapchainFormats
+function xrCreateSwapchain
+function xrDestroySwapchain
+function xrEnumerateSwapchainImages
+function xrAcquireSwapchainImage
+function xrWaitSwapchainImage
+function xrReleaseSwapchainImage
+function xrWaitFrame
+function xrBeginFrame
+function xrEndFrame
+function xrLocateViews
+function xrCreateActionSet
+function xrDestroyActionSet
+function xrCreateAction
+function xrDestroyAction
+function xrSuggestInteractionProfileBindings
+function xrAttachSessionActionSets
+function xrSyncActions
+function xrGetActionStateBoolean
+function xrGetActionStateFloat
+function xrGetActionStateVector2f
+function xrGetActionStatePose
+function xrCreateActionSpace
+function xrApplyHapticFeedback
+function xrStopHapticFeedback
+
+# Extension functions
+function xrInitializeLoaderKHR
+function xrGetOpenGLESGraphicsRequirementsKHR
+function xrConvertTimespecTimeToTimeKHR
+function xrEnumerateDisplayRefreshRatesFB
+function xrGetDisplayRefreshRateFB
+function xrRequestDisplayRefreshRateFB
+
+# XR_FB_passthrough
+enum XrPassthroughLayerPurposeFB
+flags XrPassthroughFlagsFB
+struct XrColor4f
+struct XrPassthroughCreateInfoFB
+struct XrPassthroughLayerCreateInfoFB
+struct XrCompositionLayerPassthroughFB
+struct XrPassthroughStyleFB
+struct XrPassthroughBrightnessContrastSaturationFB
+function xrCreatePassthroughFB
+function xrDestroyPassthroughFB
+function xrPassthroughStartFB
+function xrPassthroughPauseFB
+function xrCreatePassthroughLayerFB
+function xrDestroyPassthroughLayerFB
+function xrPassthroughLayerPauseFB
+function xrPassthroughLayerResumeFB
+function xrPassthroughLayerSetStyleFB
+
+# XR_META_boundary_visibility (hiding the guardian boundary while passthrough is shown)
+enum XrBoundaryVisibilityMETA
+function xrRequestBoundaryVisibilityMETA
+
+# Desktop OpenGL via EGL (XR_KHR_opengl_enable + XR_MNDX_egl_enable, e.g. Monado on Linux)
+struct XrSwapchainImageOpenGLKHR
+struct XrGraphicsRequirementsOpenGLKHR
+struct XrGraphicsBindingEGLMNDX
+function xrGetOpenGLGraphicsRequirementsKHR
+
+# Desktop OpenGL via WGL (XR_KHR_opengl_enable on Windows)
+struct XrGraphicsBindingOpenGLWin32KHR
+
+# Controller render models: XR_FB_render_model (Meta)
+flags XrRenderModelFlagsFB
+struct XrRenderModelPathInfoFB
+struct XrRenderModelPropertiesFB
+struct XrRenderModelBufferFB
+struct XrRenderModelLoadInfoFB
+struct XrRenderModelCapabilitiesRequestFB
+function xrEnumerateRenderModelPathsFB
+function xrGetRenderModelPropertiesFB
+function xrLoadRenderModelFB
+
+# Controller render models: XR_EXT_render_model + XR_EXT_interaction_render_model (cross-vendor)
+struct XrUuid
+struct XrRenderModelCreateInfoEXT
+struct XrRenderModelPropertiesGetInfoEXT
+struct XrRenderModelPropertiesEXT
+struct XrRenderModelSpaceCreateInfoEXT
+struct XrRenderModelStateGetInfoEXT
+struct XrRenderModelNodeStateEXT
+struct XrRenderModelStateEXT
+struct XrRenderModelAssetCreateInfoEXT
+struct XrRenderModelAssetDataGetInfoEXT
+struct XrRenderModelAssetDataEXT
+struct XrRenderModelAssetPropertiesGetInfoEXT
+struct XrRenderModelAssetNodePropertiesEXT
+struct XrRenderModelAssetPropertiesEXT
+struct XrInteractionRenderModelIdsEnumerateInfoEXT
+struct XrInteractionRenderModelTopLevelUserPathGetInfoEXT
+function xrCreateRenderModelEXT
+function xrDestroyRenderModelEXT
+function xrGetRenderModelPropertiesEXT
+function xrCreateRenderModelSpaceEXT
+function xrCreateRenderModelAssetEXT
+function xrDestroyRenderModelAssetEXT
+function xrGetRenderModelAssetDataEXT
+function xrGetRenderModelAssetPropertiesEXT
+function xrGetRenderModelStateEXT
+function xrEnumerateInteractionRenderModelIdsEXT
+function xrGetRenderModelPoseTopLevelUserPathEXT

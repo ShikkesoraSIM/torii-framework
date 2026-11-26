@@ -69,7 +69,7 @@ namespace osu.Framework.Platform.SDL3
         /// <summary>
         /// Gets and sets the window title.
         /// </summary>
-        public string Title
+        public virtual string Title
         {
             get => title;
             set
@@ -213,8 +213,14 @@ namespace osu.Framework.Platform.SDL3
         public virtual void Create()
         {
             SDL_WindowFlags flags = SDL_WindowFlags.SDL_WINDOW_RESIZABLE |
-                                    SDL_WindowFlags.SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                    SDL_WindowFlags.SDL_WINDOW_HIDDEN; // shown after first swap to avoid white flash on startup (windows)
+                                    SDL_WindowFlags.SDL_WINDOW_HIGH_PIXEL_DENSITY;
+
+            // Shown after the first swap to avoid a white flash on startup (windows).
+            // Not on Wayland, where a surface isn't displayed until it has a buffer anyway, and where showing the window later races
+            // with the draw thread: SDL detaches the surface's buffer to give it its role, and a frame presented in between (by then
+            // the draw thread is presenting) is a protocol error, for which the compositor closes the connection.
+            if (!IsWayland)
+                flags |= SDL_WindowFlags.SDL_WINDOW_HIDDEN;
 
             flags |= WindowState.ToFlags();
             flags |= graphicsSurface.Type.ToFlags();

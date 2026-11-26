@@ -32,5 +32,27 @@ namespace osu.Framework
                     throw new InvalidOperationException($"Could not find a suitable host for the selected operating system ({RuntimeInfo.OS}).");
             }
         }
+
+        /// <summary>
+        /// Torii: a desktop host that presents through an OpenXR runtime (e.g. Monado) instead of its window. Windows and Linux only.
+        /// </summary>
+        /// <param name="gameName">The game name.</param>
+        /// <param name="hostOptions">The host options.</param>
+        /// <param name="debugDirectory">A directory holding OpenXR debug flag files, or null.</param>
+        public static DesktopGameHost GetOpenXRDesktopHost(string gameName, HostOptions hostOptions = null, string debugDirectory = null)
+        {
+            switch (RuntimeInfo.OS)
+            {
+                case RuntimeInfo.Platform.Windows:
+                    Debug.Assert(OperatingSystem.IsWindows());
+                    return new OpenXRWindowsGameHost(gameName, hostOptions, debugDirectory: debugDirectory);
+
+                case RuntimeInfo.Platform.Linux:
+                    return new OpenXRLinuxGameHost(gameName, hostOptions, debugDirectory: debugDirectory);
+
+                default:
+                    throw new PlatformNotSupportedException("OpenXR desktop hosts are only supported on Windows and Linux.");
+            }
+        }
     }
 }

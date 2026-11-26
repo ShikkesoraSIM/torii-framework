@@ -417,7 +417,10 @@ namespace osu.Framework.Graphics.OpenGL.Textures
 
             if (uploadedRegions.Count != 0 && !manualMipmaps)
             {
-                GL.Hint(HintTarget.GenerateMipmapHint, HintMode.Nicest);
+                // The hint was removed from core profiles, where setting it is an error.
+                if (Renderer.IsEmbedded)
+                    GL.Hint(HintTarget.GenerateMipmapHint, HintMode.Nicest);
+
                 GL.GenerateMipmap(TextureTarget.Texture2D);
             }
 
@@ -482,7 +485,7 @@ namespace osu.Framework.Graphics.OpenGL.Textures
 
                     GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
                         (int)(manualMipmaps ? InternalFilteringMode : InternalFilteringMode == All.Linear ? All.LinearMipmapLinear : All.Nearest));
-                    GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)filteringMode);
+                    GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)InternalFilteringMode);
 
                     GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
                     GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);

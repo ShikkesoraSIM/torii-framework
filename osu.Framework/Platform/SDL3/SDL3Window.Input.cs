@@ -169,7 +169,7 @@ namespace osu.Framework.Platform.SDL3
                 float rx = x - pos.X;
                 float ry = y - pos.Y;
 
-                MouseMove?.Invoke(new Vector2(rx * Scale, ry * Scale));
+                MouseMove?.Invoke(TransformPointerPosition(new Vector2(rx * Scale, ry * Scale)));
             }
 
             // a button should be released if it was pressed and its current global state differs (its bit in globalButtons is set to 0)
@@ -210,7 +210,7 @@ namespace osu.Framework.Platform.SDL3
             SDL_StartTextInputWithProperties(SDLWindowHandle, props).LogErrorIfFailed();
         });
 
-        public void StopTextInput() => ScheduleCommand(() => SDL_StopTextInput(SDLWindowHandle).LogErrorIfFailed());
+        public virtual void StopTextInput() => ScheduleCommand(() => SDL_StopTextInput(SDLWindowHandle).LogErrorIfFailed());
 
         /// <summary>
         /// Resets internal state of the platform-native IME.
@@ -491,10 +491,16 @@ namespace osu.Framework.Platform.SDL3
             }
         }
 
+        /// <summary>
+        /// Maps an absolute pointer position on the window (in pixels) to the position reported to the game. For windows whose
+        /// <see cref="ClientSize"/> isn't that of the actual window.
+        /// </summary>
+        protected virtual Vector2 TransformPointerPosition(Vector2 position) => position;
+
         private void handleMouseMotionEvent(SDL_MouseMotionEvent evtMotion)
         {
             if (!SDL_GetWindowRelativeMouseMode(SDLWindowHandle))
-                MouseMove?.Invoke(new Vector2(evtMotion.x * Scale, evtMotion.y * Scale));
+                MouseMove?.Invoke(TransformPointerPosition(new Vector2(evtMotion.x * Scale, evtMotion.y * Scale)));
             else
                 MouseMoveRelative?.Invoke(new Vector2(evtMotion.xrel * Scale, evtMotion.yrel * Scale));
         }
@@ -540,7 +546,7 @@ namespace osu.Framework.Platform.SDL3
         private void handlePenMotionEvent(SDL_PenMotionEvent evtPenMotion)
         {
             var deviceType = evtPenMotion.device_type.ToTabletPenDeviceType();
-            var penPosition = new Vector2(evtPenMotion.x, evtPenMotion.y) * Scale;
+            var penPosition = TransformPointerPosition(new Vector2(evtPenMotion.x, evtPenMotion.y) * Scale);
             bool pressed = evtPenMotion.pen_state.HasFlagFast(SDL_PenInputFlags.SDL_PEN_INPUT_DOWN);
             PenMove?.Invoke(deviceType, penPosition, pressed);
         }
@@ -548,7 +554,7 @@ namespace osu.Framework.Platform.SDL3
         private void handlePenTouchEvent(SDL_PenTouchEvent evtPenTouch)
         {
             var deviceType = evtPenTouch.device_type.ToTabletPenDeviceType();
-            var penPosition = new Vector2(evtPenTouch.x, evtPenTouch.y) * Scale;
+            var penPosition = TransformPointerPosition(new Vector2(evtPenTouch.x, evtPenTouch.y) * Scale);
             bool down = evtPenTouch.down;
             PenTouch?.Invoke(deviceType, down, penPosition);
         }

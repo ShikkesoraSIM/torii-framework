@@ -71,6 +71,11 @@ namespace osu.Framework.Graphics
         protected bool RequiresRedraw => GetDrawVersion() > SharedData.DrawVersion;
 
         /// <summary>
+        /// Torii: whether <see cref="Child"/> is in a state to be drawn into the frame buffer.
+        /// </summary>
+        protected virtual bool CanRedraw => true;
+
+        /// <summary>
         /// Retrieves the version of the state of this <see cref="DrawNode"/>.
         /// The <see cref="BufferedDrawNode"/> will only re-render if this version is greater than that of the rendered <see cref="IFrameBuffer"/>s.
         /// </summary>
@@ -84,6 +89,13 @@ namespace osu.Framework.Graphics
         {
             if (!SharedData.IsInitialised)
                 SharedData.Initialise(renderer);
+
+            if (SharedData.ReleaseWhenNotDrawn)
+                renderer.MarkFrameBuffersDrawn(SharedData);
+
+            // Torii: nothing to draw the buffer from, this frame. The next generated node will have it.
+            if (RequiresRedraw && !CanRedraw)
+                return;
 
             if (RequiresRedraw)
             {

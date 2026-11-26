@@ -1773,6 +1773,19 @@ namespace osu.Framework.Graphics
         public long InvalidationID { get; private set; } = 1;
 
         /// <summary>
+        /// Torii: like <see cref="InvalidationID"/>, but not changed by invalidations coming from the parent. Inside a cached
+        /// <see cref="BufferedContainer{T}"/>, those (the container moving, say) re-apply every draw node without changing the contents.
+        /// </summary>
+        private long contentInvalidationID = 1;
+
+        /// <summary>
+        /// Torii: the <see cref="contentInvalidationID"/> as of the last draw node generation. Only accessed on the update thread.
+        /// </summary>
+        private long generatedContentInvalidationID;
+
+        internal bool ContentChangedSinceLastDrawNode => contentInvalidationID != generatedContentInvalidationID;
+
+        /// <summary>
         /// Invalidates the layout of this <see cref="Drawable"/>.
         /// </summary>
         /// <param name="invalidation">The flags to invalidate with.</param>
@@ -1841,7 +1854,13 @@ namespace osu.Framework.Graphics
             anyInvalidated |= OnInvalidate(invalidation, source);
 
             if (anyInvalidated)
+            {
                 InvalidationID++;
+
+                // Torii: what comes from the parent (it moving, scaling or fading) changes where and how this is drawn, not what's drawn.
+                if (source != InvalidationSource.Parent)
+                    contentInvalidationID++;
+            }
 
             Invalidated?.Invoke(this, invalidation);
 
@@ -1919,8 +1938,26 @@ namespace osu.Framework.Graphics
                 FrameStatistics.Increment(StatisticsCounterType.DrawNodeAppl);
             }
 
+            if (contentInvalidationID != generatedContentInvalidationID)
+            {
+                generatedContentInvalidationID = contentInvalidationID;
+                DrawNodeContentChanges++;
+            }
+
             return node;
         }
+
+        /// <summary>
+        /// Torii: running counts of drawables whose content changed since their draw node was last generated (see
+        /// <see cref="contentInvalidationID"/>) and of draw nodes added to composite draw nodes, on the thread generating draw nodes.
+        /// Used to detect changes anywhere in a subtree (see <see cref="BufferedContainer{T}.TrackSubtreeChanges"/>).
+        /// </summary>
+        [ThreadStatic]
+        internal static int DrawNodeContentChanges;
+
+        /// <inheritdoc cref="DrawNodeContentChanges"/>
+        [ThreadStatic]
+        internal static int DrawNodesGenerated;
 
         /// <summary>
         /// Creates a draw node capable of containing all information required to draw this drawable.

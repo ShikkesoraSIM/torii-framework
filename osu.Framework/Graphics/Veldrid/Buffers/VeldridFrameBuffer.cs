@@ -116,7 +116,13 @@ namespace osu.Framework.Graphics.Veldrid.Buffers
             if (Framebuffer.IsNotNull())
                 renderer.ScheduleDisposal(static f => f.Dispose(), Framebuffer);
 
-            depthTarget?.Dispose();
+            // Torii: along with the frame buffer that uses it, not right away. Commands already submitted this frame may still
+            // draw to it (resized mid-frame, the image was destroyed while in use: a GPU fault on NVIDIA, after which nothing is drawn).
+            if (depthTarget != null)
+            {
+                renderer.ScheduleDisposal(static t => t.Dispose(), depthTarget);
+                depthTarget = null;
+            }
         }
 
         public void Bind() => renderer.BindFrameBuffer(this);

@@ -2,10 +2,9 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
-using ManagedBass;
-using ManagedBass.Mix;
 using osu.Framework.Allocation;
 using osu.Framework.Audio;
+using osu.Framework.Audio.Native;
 using osu.Framework.Bindables;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
@@ -113,15 +112,8 @@ namespace osu.Framework.Graphics.Visualisation.Audio
         {
             base.Update();
 
-            float[] levels = new float[2];
+            ToriiAudioNative.ta_channel_get_levels(ToriiAudioEngine.Handle, ChannelHandle, 1 / 1000f * sample_window, out float curPeakL, out float curPeakR);
 
-            if (isOutputChannel && !usingGlobalMixer.Value)
-                Bass.ChannelGetLevel(ChannelHandle, levels, 1 / 1000f * sample_window, LevelRetrievalFlags.Stereo);
-            else
-                BassMix.ChannelGetLevel(ChannelHandle, levels, 1 / 1000f * sample_window, LevelRetrievalFlags.Stereo);
-
-            float curPeakL = levels[0];
-            float curPeakR = levels[1];
             float curPeak = (curPeakL + curPeakR) / 2f;
 
             if (curPeak > maxPeak || Clock.CurrentTime - lastMaxPeakTime > peak_hold_time)

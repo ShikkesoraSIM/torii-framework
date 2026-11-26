@@ -2,24 +2,19 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
-using ManagedBass;
+using osu.Framework.Audio.Native;
 using osu.Framework.Logging;
 
 namespace osu.Framework.Audio
 {
     internal static class BassUtils
     {
-        /// <summary>
-        /// Checks whether <see cref="Bass"/> faulted by checking its <see cref="Bass.LastError"/>.
-        /// </summary>
-        /// <param name="throwException">Whether to throw an exception if it faulted.</param>
-        /// <returns>Whether it faulted.</returns>
         internal static bool CheckFaulted(bool throwException)
         {
-            if (Bass.LastError == Errors.OK)
+            if (ToriiAudioEngine.LastError == TaError.Ok)
                 return false;
 
-            string failMessage = $@"BASS faulted with error code {Bass.LastError:D}: {Bass.LastError}.";
+            string failMessage = $@"Audio engine faulted with error code {ToriiAudioEngine.LastError:D}: {ToriiAudioEngine.LastError} ({ToriiAudioEngine.LastErrorMessage}).";
 
             if (throwException)
                 throw new InvalidOperationException(failMessage);

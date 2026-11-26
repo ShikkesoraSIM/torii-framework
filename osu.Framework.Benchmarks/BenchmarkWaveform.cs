@@ -5,7 +5,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
-using ManagedBass;
 using NUnit.Framework;
 using osu.Framework.Audio.Track;
 using osu.Framework.IO.Stores;
@@ -22,8 +21,6 @@ namespace osu.Framework.Benchmarks
         public override void SetUp()
         {
             base.SetUp();
-
-            Bass.Init();
 
             var store = new NamespacedResourceStore<byte[]>(new DllResourceStore(typeof(FrameworkTestScene).Assembly), "Resources");
 

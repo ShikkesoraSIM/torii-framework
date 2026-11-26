@@ -5,9 +5,6 @@ using System;
 using System.Runtime.InteropServices;
 using AVFoundation;
 using Foundation;
-using ManagedBass;
-using ManagedBass.Fx;
-using ManagedBass.Mix;
 using SDL;
 using UIKit;
 using static SDL.SDL3;
@@ -86,9 +83,6 @@ namespace osu.Framework.iOS
 
         private static void mapLibraryNames()
         {
-            NativeLibrary.SetDllImportResolver(typeof(Bass).Assembly, (_, assembly, path) => NativeLibrary.Load("@rpath/bass.framework/bass", assembly, path));
-            NativeLibrary.SetDllImportResolver(typeof(BassFx).Assembly, (_, assembly, path) => NativeLibrary.Load("@rpath/bass_fx.framework/bass_fx", assembly, path));
-            NativeLibrary.SetDllImportResolver(typeof(BassMix).Assembly, (_, assembly, path) => NativeLibrary.Load("@rpath/bassmix.framework/bassmix", assembly, path));
             NativeLibrary.SetDllImportResolver(typeof(SDL3).Assembly, (_, assembly, path) => NativeLibrary.Load("@rpath/SDL3.framework/SDL3", assembly, path));
         }
 

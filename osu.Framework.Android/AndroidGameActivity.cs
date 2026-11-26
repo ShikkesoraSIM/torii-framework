@@ -8,8 +8,8 @@ using Android.Content;
 using Android.Content.PM;
 using Android.OS;
 using Android.Webkit;
-using ManagedBass;
 using Org.Libsdl.App;
+using osu.Framework.Audio.Native;
 using osu.Framework.Extensions.ObjectExtensions;
 using osu.Framework.Logging;
 using Debug = System.Diagnostics.Debug;
@@ -65,13 +65,13 @@ namespace osu.Framework.Android
         protected override void OnStop()
         {
             base.OnStop();
-            Bass.Pause();
+            ToriiAudioEngine.Pause();
         }
 
         protected override void OnRestart()
         {
             base.OnRestart();
-            Bass.Start();
+            ToriiAudioEngine.Resume();
         }
 
         #region Activity result handling

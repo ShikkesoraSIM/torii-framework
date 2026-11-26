@@ -3,8 +3,8 @@
 
 using System.Collections.Immutable;
 using System.Linq;
-using ManagedBass;
 using osu.Framework.Audio;
+using osu.Framework.Audio.Native;
 using osu.Framework.IO.Stores;
 using osu.Framework.Threading;
 
@@ -12,7 +12,6 @@ namespace osu.Framework.Tests.Audio
 {
     /// <summary>
     /// <see cref="AudioManager"/> that can simulate the loss of a device.
-    /// This will NOT work without a physical audio device!
     /// </summary>
     internal class AudioManagerWithDeviceLoss : AudioManager
     {
@@ -21,7 +20,7 @@ namespace osu.Framework.Tests.Audio
         {
         }
 
-        public volatile int CurrentDevice = Bass.DefaultDevice;
+        public volatile int CurrentDevice = ToriiAudioEngine.UNINITIALISED_DEVICE;
 
         private volatile bool simulateLoss;
 
@@ -30,17 +29,17 @@ namespace osu.Framework.Tests.Audio
             try
             {
                 if (simulateLoss)
-                    return device == Bass.NoSoundDevice && base.InitBass(device);
+                    return device == ToriiAudioEngine.NO_SOUND_DEVICE && base.InitBass(device);
 
                 return base.InitBass(device);
             }
             finally
             {
-                CurrentDevice = Bass.CurrentDevice;
+                CurrentDevice = ToriiAudioEngine.CurrentDevice;
             }
         }
 
-        protected override bool CheckForDeviceChanges(ImmutableArray<DeviceInfo> previousDevices)
+        protected override bool CheckForDeviceChanges(ImmutableArray<AudioDeviceInfo> previousDevices)
         {
             if (simulateLoss)
                 return true;
@@ -48,7 +47,7 @@ namespace osu.Framework.Tests.Audio
             return base.CheckForDeviceChanges(previousDevices);
         }
 
-        protected override ImmutableArray<DeviceInfo> GetAllDevices()
+        protected override ImmutableArray<AudioDeviceInfo> GetAllDevices()
         {
             var devices = base.GetAllDevices();
 
@@ -61,9 +60,9 @@ namespace osu.Framework.Tests.Audio
         protected override bool IsCurrentDeviceValid()
         {
             if (simulateLoss)
-                return CurrentDevice == Bass.NoSoundDevice && base.IsCurrentDeviceValid();
+                return CurrentDevice == ToriiAudioEngine.NO_SOUND_DEVICE && base.IsCurrentDeviceValid();
 
-            return CurrentDevice != Bass.NoSoundDevice && base.IsCurrentDeviceValid();
+            return CurrentDevice != ToriiAudioEngine.NO_SOUND_DEVICE && base.IsCurrentDeviceValid();
         }
 
         public void SimulateDeviceLoss()
@@ -72,7 +71,7 @@ namespace osu.Framework.Tests.Audio
 
             simulateLoss = true;
 
-            if (current != Bass.NoSoundDevice)
+            if (current != ToriiAudioEngine.NO_SOUND_DEVICE)
                 WaitForDeviceChange(current);
         }
 
@@ -82,7 +81,7 @@ namespace osu.Framework.Tests.Audio
 
             simulateLoss = false;
 
-            if (current == Bass.NoSoundDevice)
+            if (current == ToriiAudioEngine.NO_SOUND_DEVICE)
                 WaitForDeviceChange(current);
         }
 

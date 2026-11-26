@@ -5,16 +5,12 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
-using ManagedBass;
-using ManagedBass.Fx;
-using osu.Framework.IO;
 using System.Threading.Tasks;
-using osu.Framework.Audio.Callbacks;
 using osu.Framework.Audio.Mixing;
 using osu.Framework.Audio.Mixing.Bass;
+using osu.Framework.Audio.Native;
 using osu.Framework.Extensions;
 using osu.Framework.Extensions.ObjectExtensions;
-using osu.Framework.Utils;
 
 namespace osu.Framework.Audio.Track
 {
@@ -23,68 +19,39 @@ namespace osu.Framework.Audio.Track
         private Stream? dataStream;
 
         /// <summary>
-        /// Should this track only be used for preview purposes? This suggests it has not yet been fully loaded.
+        /// Should this track only be used for preview purposes?
         /// </summary>
         public bool Preview { get; private set; }
 
         /// <summary>
-        /// The handle for this track, if there is one.
+        /// Native <c>torii_audio</c> track handle.
         /// </summary>
         private int activeStream;
 
         /// <summary>
-        /// The handle for adjusting tempo.
-        /// </summary>
-        private int tempoAdjustStream;
-
-        /// <summary>
-        /// This marks if the track is paused, or stopped to the end.
+        /// Marks whether playback was requested by the user (and not stopped).
         /// </summary>
         private bool isPlayed;
 
         /// <summary>
-        /// The last position that a seek will succeed for.
+        /// The last position that a seek will succeed for (1 frame before EOF).
         /// </summary>
         private double lastSeekablePosition;
-
-        private FileCallbacks? fileCallbacks;
-
-        private SyncCallback? stopCallback;
-        private SyncCallback? endCallback;
-
-        private int? stopSync;
-        private int? endSync;
 
         private volatile bool isLoaded;
 
         public override bool IsLoaded => isLoaded;
 
-        private readonly BassRelativeFrequencyHandler relativeFrequencyHandler;
+        private uint lastObservedEndEventCount;
+        private double lastPushedRestartPoint;
 
-        /// <summary>
-        /// Constructs a new <see cref="TrackBass"/> from provided audio data.
-        /// </summary>
-        /// <param name="data">The sample data stream.</param>
-        /// <param name="name">A name identifying the track internally.</param>
-        /// <param name="quick">If true, the track will not be fully loaded, and should only be used for preview purposes.  Defaults to false.</param>
+        private BassAmplitudeProcessor? bassAmplitudeProcessor;
+
         internal TrackBass(Stream data, string name, bool quick = false)
             : base(name)
         {
             ArgumentNullException.ThrowIfNull(data);
 
-            relativeFrequencyHandler = new BassRelativeFrequencyHandler
-            {
-                FrequencyChangedToZero = stopInternal,
-                FrequencyChangedFromZero = () =>
-                {
-                    // Do not resume the track if a play wasn't requested at all or has been paused via Stop().
-                    if (!isPlayed) return;
-
-                    startInternal();
-                }
-            };
-
-            // todo: support this internally to match the underlying Track implementation (which can support this).
             const float tempo_minimum_supported = 0.05f;
 
             AggregateTempo.ValueChanged += t =>
@@ -96,139 +63,95 @@ namespace osu.Framework.Audio.Track
             EnqueueAction(() =>
             {
                 Preview = quick;
+                dataStream = data;
 
-                activeStream = prepareStream(data, quick);
+                activeStream = prepareStream(data, quick, out TaTrackInfo info);
 
-                long byteLength = Bass.ChannelGetLength(activeStream);
+                // We've copied the stream bytes into native memory — release managed stream immediately!
+                dataStream?.Dispose();
+                dataStream = null;
 
-                // will be -1 in case of an error
-                double seconds = Bass.ChannelBytes2Seconds(activeStream, byteLength);
-
-                int channels = 2;
-
-                if (Bass.ChannelGetInfo(activeStream, out ChannelInfo info))
-                    channels = info.Channels;
-
-                bool success = seconds >= 0;
-
-                if (success)
+                if (activeStream != 0)
                 {
-                    Length = seconds * 1000;
-
-                    // Bass uses 16-bit samples by default if neither BassFlags.Byte nor BassFlags.Float is specified
-                    const int bytes_per_sample = 2;
-
-                    // Bass does not allow seeking to the end of the track, so the last available position is 1 sample before.
-                    lastSeekablePosition = Bass.ChannelBytes2Seconds(activeStream, byteLength - bytes_per_sample * channels) * 1000;
-
+                    Length = info.LengthMs;
+                    lastSeekablePosition = info.LastSeekableMs;
+                    bitrate = info.BitrateKbps;
                     isLoaded = true;
 
-                    relativeFrequencyHandler.SetChannel(activeStream);
+                    pushParamsToNative();
+
+                    if (Mixer is BassAudioMixer bm)
+                        bm.AddChannelToBassMix(this);
                 }
             });
 
             InvalidateState();
         }
 
-        private void setLoopFlag(bool value) => EnqueueAction(() =>
+        private unsafe int prepareStream(Stream data, bool quick, out TaTrackInfo info)
         {
-            if (activeStream != 0)
-                Bass.ChannelFlags(activeStream, value ? BassFlags.Loop : BassFlags.Default, BassFlags.Loop);
-        });
+            info = default;
 
-        private int prepareStream(Stream data, bool quick)
-        {
-            switch (data)
+            byte[] bytes;
+            try
             {
-                case MemoryStream:
-                case UnmanagedMemoryStream:
-                case AsyncBufferStream:
-                    // Buffering memory stream is definitely unworthy.
-                    dataStream = data;
-                    break;
-
-                default:
-                    // It would be most likely a FileStream.
-                    // Consider to use RandomAccess to optimise in favor of FileStream in .NET 6
-                    dataStream = new AsyncBufferStream(data, quick ? 8 : -1);
-                    break;
+                bytes = ToriiAudioEngine.ReadStreamBytes(data);
+            }
+            catch
+            {
+                return 0;
             }
 
-            fileCallbacks = new FileCallbacks(new DataStreamFileProcedures(dataStream));
+            if (bytes.Length < 4)
+                return 0;
 
-            BassFlags flags = (Preview ? 0 : BassFlags.Decode | BassFlags.Prescan);
-
-            // While this shouldn't cause issues, we've had a small subset of users reporting issues on windows.
-            // To keep things working let's only apply to other platforms until we know more.
-            // See https://github.com/ppy/osu/issues/18652.
-            if (RuntimeInfo.OS != RuntimeInfo.Platform.Windows)
-                flags |= BassFlags.AsyncFile;
-
-            int stream = Bass.CreateStream(StreamSystem.NoBuffer, flags, fileCallbacks.Callbacks, fileCallbacks.Handle);
-
-            bitrate = (int)Math.Round(Bass.ChannelGetAttribute(stream, ChannelAttribute.Bitrate));
-
-            if (!Preview)
+            fixed (byte* ptr = bytes)
             {
-                // We assign the BassFlags.Decode streams to the device "bass_nodevice" to prevent them from getting
-                // cleaned up during a Bass.Free call. This is necessary for seamless switching between audio devices.
-                // Further, we provide the flag BassFlags.FxFreeSource such that freeing the stream also frees
-                // all parent decoding streams.
-                const int bass_nodevice = 0x20000;
-
-                Bass.ChannelSetDevice(stream, bass_nodevice);
-                tempoAdjustStream = BassFx.TempoCreate(stream, BassFlags.Decode | BassFlags.FxFreeSource);
-                Bass.ChannelSetDevice(tempoAdjustStream, bass_nodevice);
-                stream = BassFx.ReverseCreate(tempoAdjustStream, 5f, BassFlags.Default | BassFlags.FxFreeSource | BassFlags.Decode);
-
-                Bass.ChannelSetAttribute(tempoAdjustStream, ChannelAttribute.TempoUseQuickAlgorithm, 1);
-                Bass.ChannelSetAttribute(tempoAdjustStream, ChannelAttribute.TempoOverlapMilliseconds, 4);
-                Bass.ChannelSetAttribute(tempoAdjustStream, ChannelAttribute.TempoSequenceMilliseconds, 30);
-                // 0x10017 = BASS_ATTRIB_TEMPO_OPTION_OLDPOS, used for smoother time reporting when tempo adjustments are active
-                // see: https://www.un4seen.com/forum/?topic=20482.msg145282#msg145282
-                Bass.ChannelSetAttribute(tempoAdjustStream, (ChannelAttribute)0x10017, 1);
+                return ToriiAudioNative.ta_track_create(ToriiAudioEngine.Handle, ptr, (nuint)bytes.Length, quick ? 1 : 0, out info);
             }
-
-            return stream;
         }
-
-        /// <summary>
-        /// Returns whether the playback state is considered to be running or not.
-        /// This will only return true for <see cref="PlaybackState.Playing"/> and <see cref="PlaybackState.Stalled"/>.
-        /// </summary>
-        private static bool isRunningState(PlaybackState state) => state == PlaybackState.Playing || state == PlaybackState.Stalled;
 
         void IBassAudio.UpdateDevice(int deviceIndex)
         {
-            // Bass may leave us in an invalid state after the output device changes (this is true for "No sound" device)
-            // if the observed state was playing before change, we should force things into a good state.
-            if (isPlayed)
-            {
-                // While on windows, changing to "No sound" changes the playback state correctly,
-                // on macOS it is left in a playing-but-stalled state. Forcefully stopping first fixes this.
-                stopInternal();
-
-                // this is required otherwise the "Completed" event won't fire after a device change
-                cleanUpSyncs();
-                initializeSyncs();
-
-                startInternal();
-            }
+            // Native track & mixer live inside ta_engine across device switches;
+            // just re-ensure desired play state if needed.
+            if (isPlayed && !hasCompleted && activeStream != 0)
+                ToriiAudioNative.ta_track_play(ToriiAudioEngine.Handle, activeStream);
         }
-
-        private BassAmplitudeProcessor? bassAmplitudeProcessor;
 
         protected override void UpdateState()
         {
             base.UpdateState();
 
-            bool running = isRunningState(bassMixer.ChannelIsActive(this));
+            if (activeStream != 0 && RestartPoint != lastPushedRestartPoint)
+                pushParamsToNative();
 
-            // because device validity check isn't done frequently, when switching to "No sound" device,
-            // there will be a brief time where this track will be stopped, before we resume it manually (see comments in UpdateDevice(int).)
-            // this makes us appear to be playing, even if we may not be.
-            isRunning = running || (isPlayed && !hasCompleted);
-            updateCurrentTime();
+            if (activeStream != 0 && ToriiAudioNative.ta_track_get_clock(ToriiAudioEngine.Handle, activeStream, out TaTrackClock clock) != 0)
+            {
+                Interlocked.Exchange(ref currentTime, clock.CurrentTimeMs);
+
+                if (clock.EndEventCount != lastObservedEndEventCount)
+                {
+                    lastObservedEndEventCount = clock.EndEventCount;
+
+                    if (!Looping)
+                    {
+                        hasCompleted = true;
+                        isRunning = false;
+                        RaiseCompleted();
+                    }
+                }
+                else
+                {
+                    hasCompleted = clock.HasCompleted != 0;
+                    bool running = clock.IsPlaying != 0;
+                    isRunning = running || (isPlayed && !hasCompleted);
+                }
+            }
+            else
+            {
+                isRunning = isPlayed && !hasCompleted && isLoaded;
+            }
 
             bassAmplitudeProcessor?.Update();
         }
@@ -248,18 +171,12 @@ namespace osu.Framework.Audio.Track
 
         private void stopInternal()
         {
-            if (!isRunningState(bassMixer.ChannelIsActive(this)))
+            if (activeStream == 0)
                 return;
 
-            bassMixer.ChannelPause(this, true);
-        }
-
-        private int direction;
-
-        private void setDirection(bool reverse)
-        {
-            direction = reverse ? -1 : 1;
-            Bass.ChannelSetAttribute(activeStream, ChannelAttribute.ReverseDirection, direction);
+            ToriiAudioNative.ta_track_pause(ToriiAudioEngine.Handle, activeStream, 1);
+            if (Mixer is BassAudioMixer bm)
+                bm.ChannelPause(this, true);
         }
 
         public override void Start()
@@ -277,19 +194,17 @@ namespace osu.Framework.Audio.Track
 
         private bool startInternal()
         {
-            // ensure state is correct before starting.
             InvalidateState();
 
-            // Bass will restart the track if it has reached its end. This behavior isn't desirable so block locally.
-            if (hasCompleted)
+            if (hasCompleted || activeStream == 0)
                 return false;
 
-            if (relativeFrequencyHandler.IsFrequencyZero)
-                return true;
+            pushParamsToNative();
 
-            setLoopFlag(Looping);
+            if (Mixer is BassAudioMixer bm)
+                bm.ChannelPlay(this);
 
-            return bassMixer.ChannelPlay(this);
+            return ToriiAudioNative.ta_track_play(ToriiAudioEngine.Handle, activeStream) != 0;
         }
 
         public override bool Looping
@@ -298,7 +213,7 @@ namespace osu.Framework.Audio.Track
             set
             {
                 base.Looping = value;
-                setLoopFlag(Looping);
+                EnqueueAction(pushParamsToNative);
             }
         }
 
@@ -306,8 +221,6 @@ namespace osu.Framework.Audio.Track
 
         public override async Task<bool> SeekAsync(double seek)
         {
-            // At this point the track may not yet be loaded which is indicated by a 0 length.
-            // In that case we still want to return true, hence the conservative length.
             double conservativeLength = Length == 0 ? double.MaxValue : lastSeekablePosition;
             double conservativeClamped = Math.Clamp(seek, 0, conservativeLength);
 
@@ -318,33 +231,21 @@ namespace osu.Framework.Audio.Track
 
         private void seekInternal(double seek)
         {
-            double clamped = Math.Clamp(seek, 0, Length);
+            if (activeStream == 0)
+                return;
+
+            // Match BASS contract (TrackBassTest.TestSeekToEndFails):
+            // seeking to/beyond Track.Length fails without altering CurrentTime or HasCompleted.
+            if (Length > 0 && seek > lastSeekablePosition)
+                return;
+
+            double clamped = Math.Clamp(seek, 0, lastSeekablePosition);
 
             if (clamped < Length)
                 hasCompleted = false;
 
-            long pos = Bass.ChannelSeconds2Bytes(activeStream, clamped / 1000d);
-
-            if (pos != bassMixer.ChannelGetPosition(this))
-                bassMixer.ChannelSetPosition(this, pos);
-
-            // current time updates are safe to perform from enqueued actions,
-            // but not always safe to perform from BASS callbacks, since those can sometimes use a separate thread.
-            // if it's not safe to update immediately here, the next UpdateState() call is guaranteed to update the time safely anyway.
-            if (CanPerformInline)
-                updateCurrentTime();
-        }
-
-        private void updateCurrentTime()
-        {
-            Debug.Assert(CanPerformInline);
-
-            long bytePosition = bassMixer.ChannelGetPosition(this);
-
-            // A mixer with the MixerNonStop flag may not have a valid position if the underlying track is not in a valid state.
-            // See https://www.un4seen.com/forum/?msg=142145.
-            if (bytePosition != -1)
-                Interlocked.Exchange(ref currentTime, Bass.ChannelBytes2Seconds(activeStream, bytePosition) * 1000);
+            ToriiAudioNative.ta_track_seek_ms(ToriiAudioEngine.Handle, activeStream, clamped, out double actualMs);
+            Interlocked.Exchange(ref currentTime, actualMs);
         }
 
         private double currentTime;
@@ -362,17 +263,25 @@ namespace osu.Framework.Audio.Track
         internal override void OnStateChanged()
         {
             base.OnStateChanged();
+            pushParamsToNative();
+        }
 
+        private void pushParamsToNative()
+        {
             if (activeStream == 0)
                 return;
 
-            setDirection(AggregateFrequency.Value < 0);
+            lastPushedRestartPoint = RestartPoint;
 
-            Bass.ChannelSetAttribute(activeStream, ChannelAttribute.Volume, AggregateVolume.Value);
-            Bass.ChannelSetAttribute(activeStream, ChannelAttribute.Pan, AggregateBalance.Value);
-            relativeFrequencyHandler.SetFrequency(AggregateFrequency.Value);
-
-            Bass.ChannelSetAttribute(tempoAdjustStream, ChannelAttribute.Tempo, (Math.Abs(AggregateTempo.Value) - 1) * 100);
+            ToriiAudioNative.ta_track_set_params(
+                ToriiAudioEngine.Handle,
+                activeStream,
+                (float)AggregateVolume.Value,
+                (float)AggregateBalance.Value,
+                AggregateFrequency.Value,
+                Math.Max(0.05, Math.Abs(AggregateTempo.Value)),
+                Looping ? 1 : 0,
+                RestartPoint);
         }
 
         private volatile int bitrate;
@@ -381,51 +290,6 @@ namespace osu.Framework.Audio.Track
 
         public override ChannelAmplitudes CurrentAmplitudes => (bassAmplitudeProcessor ??= new BassAmplitudeProcessor(this)).CurrentAmplitudes;
 
-        private void initializeSyncs()
-        {
-            Debug.Assert(stopCallback == null
-                         && stopSync == null
-                         && endCallback == null
-                         && endSync == null);
-
-            stopCallback = new SyncCallback((_, _, _, _) => RaiseFailed());
-            endCallback = new SyncCallback((_, _, _, _) =>
-            {
-                if (Looping)
-                {
-                    // because the sync callback doesn't necessarily fire in the right moment and the transition may not always be smooth,
-                    // do not attempt to seek back to restart point if it is 0, and defer to the channel loop flag instead.
-                    // a mixtime callback was used for this previously, but it is incompatible with mixers
-                    // (as they have a playback buffer, and so a skip forward would be audible).
-                    if (Precision.DefinitelyBigger(RestartPoint, 0, 1))
-                        seekInternal(RestartPoint);
-
-                    return;
-                }
-
-                hasCompleted = true;
-                RaiseCompleted();
-            });
-
-            stopSync = bassMixer.ChannelSetSync(this, SyncFlags.Stop, 0, stopCallback.Callback, stopCallback.Handle);
-            endSync = bassMixer.ChannelSetSync(this, SyncFlags.End, 0, endCallback.Callback, endCallback.Handle);
-        }
-
-        private void cleanUpSyncs()
-        {
-            if (stopSync != null) bassMixer.ChannelRemoveSync(this, stopSync.Value);
-            if (endSync != null) bassMixer.ChannelRemoveSync(this, endSync.Value);
-
-            stopSync = null;
-            endSync = null;
-
-            stopCallback?.Dispose();
-            stopCallback = null;
-
-            endCallback?.Dispose();
-            endCallback = null;
-        }
-
         #region Mixing
 
         protected override AudioMixer? Mixer
@@ -433,21 +297,10 @@ namespace osu.Framework.Audio.Track
             get => base.Mixer;
             set
             {
-                // While BASS cleans up syncs automatically on mixer change, ManagedBass internally tracks the sync procedures via ChannelReferences, so clean up eagerly for safety.
-                if (Mixer != null)
-                    cleanUpSyncs();
-
                 base.Mixer = value;
 
-                // The mixer can be null in this case, if set via Dispose() / bassMixer.StreamFree(this).
-                if (Mixer != null)
-                {
-                    // Tracks are always active until they're disposed, so they need to be added to the mix prematurely for operations like Seek() to work immediately.
+                if (Mixer != null && activeStream != 0)
                     bassMixer.AddChannelToBassMix(this);
-
-                    // Syncs are not automatically moved on mixer change, so restore them on the new mixer manually.
-                    initializeSyncs();
-                }
             }
         }
 
@@ -473,21 +326,17 @@ namespace osu.Framework.Audio.Track
             if (IsDisposed)
                 return;
 
-            cleanUpSyncs();
-
             if (activeStream != 0)
             {
                 isRunning = false;
-                bassMixer.StreamFree(this);
+                if (Mixer is BassAudioMixer bm)
+                    bm.StreamFree(this);
+                ToriiAudioNative.ta_track_destroy(ToriiAudioEngine.Handle, activeStream);
+                activeStream = 0;
             }
-
-            activeStream = 0;
 
             dataStream?.Dispose();
             dataStream = null;
-
-            fileCallbacks?.Dispose();
-            fileCallbacks = null;
 
             base.Dispose(disposing);
         }

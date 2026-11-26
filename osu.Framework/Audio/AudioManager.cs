@@ -10,11 +10,9 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using JetBrains.Annotations;
-using ManagedBass;
-using ManagedBass.Fx;
-using ManagedBass.Mix;
 using osu.Framework.Audio.Mixing;
 using osu.Framework.Audio.Mixing.Bass;
+using osu.Framework.Audio.Native;
 using osu.Framework.Audio.Sample;
 using osu.Framework.Audio.Track;
 using osu.Framework.Bindables;
@@ -30,20 +28,14 @@ namespace osu.Framework.Audio
     public class AudioManager : AudioCollectionManager<AudioComponent>
     {
         /// <summary>
-        /// The number of BASS audio devices preceding the first real audio device.
-        /// Consisting of <see cref="Bass.NoSoundDevice"/> and <see cref="bass_default_device"/>.
+        /// The number of internal synthetic devices preceding the first real audio device:
+        /// index 0 = NoSound, index 1 = OS Default.
         /// </summary>
         protected const int BASS_INTERNAL_DEVICE_COUNT = 2;
 
-        /// <summary>
-        /// The index of the BASS audio device denoting the OS default.
-        /// </summary>
-        /// <remarks>
-        /// See http://www.un4seen.com/doc/#bass/BASS_CONFIG_DEV_DEFAULT.html for more information on the included device.
-        /// </remarks>
-        private const int bass_default_device = 1;
+        private const int default_device_index = ToriiAudioEngine.DEFAULT_DEVICE;
 
-        private Errors lastFaultedError = Errors.OK;
+        private TaError lastFaultedError = TaError.Ok;
         private int lastFaultedDevice = -1;
 
         /// <summary>
@@ -57,7 +49,7 @@ namespace osu.Framework.Audio
         public ISampleStore Samples => globalSampleStore.Value;
 
         /// <summary>
-        /// The thread audio operations (mainly Bass calls) are ran on.
+        /// The thread audio operations are run on.
         /// </summary>
         private readonly AudioThread thread;
 
@@ -74,15 +66,6 @@ namespace osu.Framework.Audio
         /// <summary>
         /// The names of all available audio devices.
         /// </summary>
-        /// <remarks>
-        /// <para>
-        /// This property does not contain the names of disabled audio devices.
-        /// </para>
-        /// <para>
-        /// This property may also not necessarily contain the name of the default audio device provided by the OS.
-        /// Consumers should provide a "Default" audio device entry which sets <see cref="AudioDevice"/> to an empty string.
-        /// </para>
-        /// </remarks>
         public IEnumerable<string> AudioDeviceNames => audioDeviceNames;
 
         /// <summary>
@@ -102,16 +85,12 @@ namespace osu.Framework.Audio
         public readonly Bindable<string> AudioDevice = new Bindable<string>();
 
         /// <summary>
-        /// Whether to use experimental WASAPI initialisation on windows.
-        /// This generally results in lower audio latency, but also changes the audio synchronisation from
-        /// historical expectations, meaning users / application will have to account for different offsets.
+        /// Whether to use low-latency WASAPI event-driven initialisation on Windows.
         /// </summary>
         public readonly BindableBool UseExperimentalWasapi = new BindableBool();
 
         /// <summary>
         /// Whether WASAPI should take exclusive control of the output device.
-        /// This gives the lowest latency the hardware can do, at the cost of every other
-        /// application losing output on that device while this one holds it.
         /// Only has an effect when <see cref="UseExperimentalWasapi"/> is also active.
         /// </summary>
         public readonly BindableBool UseExclusiveWasapi = new BindableBool();
@@ -120,22 +99,11 @@ namespace osu.Framework.Audio
         /// Periodo de update a pedirle al dispositivo en modo exclusivo, en ms.
         /// 0 = automatico (el minimo que declare el dispositivo).
         /// </summary>
-        /// <remarks>
-        /// El minimo no siempre es lo mejor. Un headset inalambrico corriendo a 3ms
-        /// puede resetearse cada tantos minutos, y en exclusivo eso no es un salto de
-        /// audio: el juego posee el dispositivo, asi que cuando desaparece hay que
-        /// reconstruir todo el stack y se congela unos segundos. Subir el periodo
-        /// cuesta un poco de latencia y compra estabilidad.
-        ///
-        /// Si el valor pedido no lo acepta el dispositivo, el init sigue con los
-        /// candidatos de siempre: pedir un periodo raro nunca deja sin audio.
-        /// </remarks>
         public readonly BindableDouble ExclusiveUpdatePeriodMs = new BindableDouble();
 
         /// <summary>
         /// Output latency of the current device in milliseconds, as reported by the audio
-        /// backend. Zero when it can't be determined. Exposed so the game can show what the
-        /// audio path is actually costing.
+        /// backend. Zero when it can't be determined.
         /// </summary>
         public IBindable<double> OutputLatency => outputLatency;
 
@@ -161,34 +129,20 @@ namespace osu.Framework.Audio
 
         /// <summary>
         /// Whether a global mixer is being used for audio routing.
-        /// For now, this is only the case on Windows when using shared mode WASAPI initialisation.
         /// </summary>
         public IBindable<bool> UsingGlobalMixer => usingGlobalMixer;
 
         private readonly Bindable<bool> usingGlobalMixer = new BindableBool();
 
         /// <summary>
-        /// If a global mixer is being used, this will be the BASS handle for it.
-        /// If non-null, all game mixers should be added to this mixer.
+        /// Global root mixer handle when active.
         /// </summary>
-        /// <remarks>
-        /// When this is non-null, all mixers created via <see cref="CreateAudioMixer"/>
-        /// will themselves be added to the global mixer, which will handle playback itself.
-        ///
-        /// In this mode of operation, nested mixers will be created with the <see cref="BassFlags.Decode"/>
-        /// flag, meaning they no longer handle playback directly.
-        ///
-        /// An eventual goal would be to use a global mixer across all platforms as it can result
-        /// in more control and better playback performance.
-        /// </remarks>
         internal readonly IBindable<int?> GlobalMixerHandle = new Bindable<int?>();
 
-        public override bool IsLoaded => base.IsLoaded &&
-                                         // bass default device is a null device (-1), not the actual system default.
-                                         Bass.CurrentDevice != Bass.DefaultDevice;
+        public override bool IsLoaded => base.IsLoaded && ToriiAudioEngine.CurrentDevice != ToriiAudioEngine.UNINITIALISED_DEVICE;
 
         // Mutated by multiple threads, must be thread safe.
-        private ImmutableArray<DeviceInfo> audioDevices = ImmutableArray<DeviceInfo>.Empty;
+        private ImmutableArray<AudioDeviceInfo> audioDevices = ImmutableArray<AudioDeviceInfo>.Empty;
         private ImmutableList<string> audioDeviceNames = ImmutableList<string>.Empty;
 
         private Scheduler scheduler => thread.Scheduler;
@@ -207,16 +161,8 @@ namespace osu.Framework.Audio
 
         private readonly Lazy<TrackStore> globalTrackStore;
         private readonly Lazy<SampleStore> globalSampleStore;
-
         private readonly ResourceStore<byte[]> sampleByteStore;
 
-        /// <summary>
-        /// Constructs an AudioStore given a track resource store, and a sample resource store.
-        /// </summary>
-        /// <param name="audioThread">The host's audio thread.</param>
-        /// <param name="trackStore">The resource store containing all audio tracks to be used in the future.</param>
-        /// <param name="sampleStore">The sample store containing all audio samples to be used in the future.</param>
-        /// <param name="config"></param>
         public AudioManager(AudioThread audioThread, ResourceStore<byte[]> trackStore, ResourceStore<byte[]> sampleStore, [CanBeNull] FrameworkConfigManager config)
         {
             thread = audioThread;
@@ -227,7 +173,6 @@ namespace osu.Framework.Audio
 
             if (config != null)
             {
-                // attach config bindables
                 config.BindWith(FrameworkSetting.AudioDevice, AudioDevice);
                 config.BindWith(FrameworkSetting.AudioUseExperimentalWasapi, UseExperimentalWasapi);
                 config.BindWith(FrameworkSetting.AudioWasapiExclusive, UseExclusiveWasapi);
@@ -239,9 +184,7 @@ namespace osu.Framework.Audio
             AudioDevice.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
             UseExperimentalWasapi.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
             UseExclusiveWasapi.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
-            // Cambiar el periodo obliga a reinicializar: es un parametro del init.
             ExclusiveUpdatePeriodMs.ValueChanged += _ => scheduler.AddOnce(initCurrentDevice);
-            // initCurrentDevice not required for changes to `GlobalMixerHandle` as it is only changed when experimental wasapi is toggled (handled above).
             GlobalMixerHandle.ValueChanged += handle => usingGlobalMixer.Value = handle.NewValue.HasValue;
 
             AddItem(TrackMixer = createAudioMixer(null, nameof(TrackMixer)));
@@ -265,7 +208,7 @@ namespace osu.Framework.Audio
 
             syncAudioDevices();
 
-            // check for changes in any audio devices every 1000ms (slightly expensive operation)
+            // check for changes in any audio devices every 1000ms
             CancellationToken token = cancelSource.Token;
             scheduler.AddDelayed(() =>
             {
@@ -275,7 +218,7 @@ namespace osu.Framework.Audio
                     {
                         try
                         {
-                            if (CheckForDeviceChanges(audioDevices))
+                            if (CheckForDeviceChanges(audioDevices) || ToriiAudioNative.ta_device_is_lost(ToriiAudioEngine.Handle) != 0)
                                 syncAudioDevices();
                             Thread.Sleep(1000);
                         }
@@ -304,13 +247,6 @@ namespace osu.Framework.Audio
 
         private static int userMixerID;
 
-        /// <summary>
-        /// Creates a new <see cref="AudioMixer"/>.
-        /// </summary>
-        /// <remarks>
-        /// Channels removed from this <see cref="AudioMixer"/> fall back to the global <see cref="SampleMixer"/>.
-        /// </remarks>
-        /// <param name="identifier">An identifier displayed on the audio mixer visualiser.</param>
         public AudioMixer CreateAudioMixer(string identifier = null) =>
             createAudioMixer(SampleMixer, !string.IsNullOrEmpty(identifier) ? identifier : $"user #{Interlocked.Increment(ref userMixerID)}");
 
@@ -335,12 +271,6 @@ namespace osu.Framework.Audio
                 activeMixers.Remove(mixer);
         }
 
-        /// <summary>
-        /// Obtains the <see cref="TrackStore"/> corresponding to a given resource store.
-        /// Returns the global <see cref="TrackStore"/> if no resource store is passed.
-        /// </summary>
-        /// <param name="store">The <see cref="IResourceStore{T}"/> of which to retrieve the <see cref="TrackStore"/>.</param>
-        /// <param name="mixer">The <see cref="AudioMixer"/> to use for tracks created by this store. Defaults to the global <see cref="TrackMixer"/>.</param>
         public ITrackStore GetTrackStore(IResourceStore<byte[]> store = null, AudioMixer mixer = null)
         {
             if (store == null) return globalTrackStore.Value;
@@ -350,32 +280,19 @@ namespace osu.Framework.Audio
             return tm;
         }
 
-        /// <summary>
-        /// Obtains the <see cref="SampleStore"/> corresponding to a given resource store.
-        /// </summary>
-        /// <remarks>
-        /// By default, <c>.wav</c> and <c>.ogg</c> extensions will be automatically appended to lookups on the returned store
-        /// if the lookup does not correspond directly to an existing filename.
-        /// Additional extensions can be added via <see cref="ISampleStore.AddExtension"/>.
-        /// </remarks>
-        /// <param name="store">The <see cref="IResourceStore{T}"/> of which to retrieve the <see cref="SampleStore"/>.</param>
-        /// <param name="mixer">The <see cref="AudioMixer"/> to use for samples created by this store. Defaults to the global <see cref="SampleMixer"/>.</param>
-        /// <param name="applyGlobalAdjustments">Whether the game-wide effect volume adjustment (and any other adjustments applied to <see cref="Samples"/>) should be applied to samples retrieved from the resultant store.</param>
         public ISampleStore GetSampleStore(IResourceStore<byte[]> store = null, AudioMixer mixer = null, bool applyGlobalAdjustments = true)
         {
+            if (store == null && mixer == null && applyGlobalAdjustments)
+                return globalSampleStore.Value;
+
             SampleStore sm = new SampleStore(store ?? sampleByteStore, mixer ?? SampleMixer);
             if (applyGlobalAdjustments)
                 globalSampleStore.Value.AddItem(sm);
             else
                 AddItem(sm);
-
             return sm;
         }
 
-        /// <summary>
-        /// (Re-)Initialises BASS for the current <see cref="AudioDevice"/>.
-        /// This will automatically fall back to the system default device on failure.
-        /// </summary>
         private void initCurrentDevice()
         {
             string deviceName = AudioDevice.Value;
@@ -384,117 +301,49 @@ namespace osu.Framework.Audio
             int deviceIndex = audioDeviceNames.FindIndex(d => d == deviceName);
             if (deviceIndex >= 0 && trySetDevice(BASS_INTERNAL_DEVICE_COUNT + deviceIndex)) return;
 
-            // try using the system default if there is any device present.
-            // mobiles are an exception as the built-in speakers may not be provided as an audio device name,
-            // but they are still provided by BASS under the internal device name "Default".
-            if ((audioDeviceNames.Count > 0 || RuntimeInfo.IsMobile) && trySetDevice(bass_default_device)) return;
+            // try using the system default if there is any device present (or on mobile).
+            if ((audioDeviceNames.Count > 0 || RuntimeInfo.IsMobile) && trySetDevice(default_device_index)) return;
 
-            // no audio devices can be used, so try using Bass-provided "No sound" device as last resort.
-            trySetDevice(Bass.NoSoundDevice);
-
-            // we're boned. even "No sound" device won't initialise.
+            // no audio devices can be used, so try using "No sound" software device as last resort.
+            trySetDevice(ToriiAudioEngine.NO_SOUND_DEVICE);
             return;
 
             bool trySetDevice(int deviceId)
             {
                 var device = audioDevices.ElementAtOrDefault(deviceId);
 
-                // device is invalid
                 if (!device.IsEnabled)
                     return false;
 
-                // we don't want bass initializing with real audio device on headless test runs.
-                if (deviceId != Bass.NoSoundDevice && DebugUtils.IsNUnitRunning)
+                // we don't want real audio hardware initialised on headless test runs.
+                if (deviceId != ToriiAudioEngine.NO_SOUND_DEVICE && DebugUtils.IsNUnitRunning)
                     return false;
 
-                // initialize new device
                 if (!InitBass(deviceId))
                     return false;
 
-                //we have successfully initialised a new device.
                 UpdateDevice(deviceId);
-
                 return true;
             }
         }
 
         /// <summary>
-        /// This method calls <see cref="Bass.Init(int, int, DeviceInitFlags, IntPtr, IntPtr)"/>.
-        /// It can be overridden for unit testing.
+        /// Initialises the native <c>torii_audio</c> output device.
+        /// Virtual so unit tests (e.g. <c>AudioManagerWithDeviceLoss</c>) can override device init.
         /// </summary>
-        /// <param name="device">The device to initialise.</param>
         protected virtual bool InitBass(int device)
         {
-            if (int.TryParse(Environment.GetEnvironmentVariable("OSU_TEMP_TESTING_BASS_CONFIG_DEV_PERIOD"), out int devicePeriod))
-            {
-                Logger.Log(
-                    $"Device period is set to \"{devicePeriod}\" via environment variable for testing purposes.\n\nThis is made available for testing so we can gather feedback on how to incorporate as a permanent game setting. Incorrect settings may lead to serious issues.",
-                    level: LogLevel.Important);
-
-                // Device period normally is in milliseconds, but it might be set to a negative
-                // value too for an exact sample size, e.g. -256 for 256 samples.
-                // https://www.un4seen.com/doc/#bass/BASS_CONFIG_DEV_PERIOD.html
-                Bass.Configure(ManagedBass.Configuration.DevicePeriod, devicePeriod);
-
-                // 1ms is definitely too low, but we're setting such low number on purpose,
-                // in order for BASS to automatically set it to twice the length of BASS_CONFIG_DEV_PERIOD.
-                //
-                // See https://www.un4seen.com/doc/#bass/BASS_CONFIG_DEV_BUFFER.html
-                Bass.DeviceBufferLength = 1;
-            }
-            else
-            {
-                // reduce latency to a known sane minimum.
-                Bass.DeviceBufferLength = 10;
-            }
-
-            // These two likely don't have any effect because we set StreamSystem.NoBuffer on audio streams.
-            Bass.UpdatePeriod = 5;
-            Bass.PlaybackBufferLength = 100;
-
-            // ensure there are no brief delays on audio operations (causing stream stalls etc.) after periods of silence.
-            Bass.DeviceNonStop = true;
-
-            // without this, if bass falls back to directsound legacy mode the audio playback offset will be way off.
-            Bass.Configure(ManagedBass.Configuration.TruePlayPosition, 0);
-
-            // Unicode device information allows correct display of devices with UTF-8 content in the device list.
-            // See https://www.radio42.com/bass/help/html/3490e2bc-7f3a-9135-3d24-ee519029f737.htm (value 42).
-            Bass.Configure(ManagedBass.Configuration.UnicodeDeviceInformation, true);
-
-            // Set BASS_IOS_SESSION_DISABLE here to leave session configuration in our hands (see iOS project).
-            Bass.Configure(ManagedBass.Configuration.IOSSession, 16);
-
-            // Always provide a default device. This should be a no-op, but we have asserts for this behaviour.
-            Bass.Configure(ManagedBass.Configuration.IncludeDefaultDevice, true);
-
-            // Enable custom BASS_CONFIG_MP3_OLDGAPS flag for backwards compatibility.
-            // - This disables support for ItunSMPB tag parsing to match previous expectations.
-            // - This also disables a change which assumes a 529 sample (2116 byte in stereo 16-bit) delay if the MP3 file doesn't specify one.
-            //   (That was added in Bass for more consistent results across platforms and standard/mp3-free BASS versions, because OSX/iOS's MP3 decoder always removes 529 samples)
-            Bass.Configure((ManagedBass.Configuration)68, 1);
-
-            // Disable BASS_CONFIG_DEV_TIMEOUT flag to keep BASS audio output from pausing on device processing timeout.
-            // See https://www.un4seen.com/forum/?topic=19601 for more information.
-            Bass.Configure((ManagedBass.Configuration)70, false);
-
             bool success = attemptInit();
 
             if (success || !UseExperimentalWasapi.Value)
                 return success;
 
-            // Busy means someone ELSE has the device right now (another client running in
-            // exclusive mode, typically). That's transient: flipping the user's settings
-            // off over it would nuke their config because of something another process
-            // did. Fall through to the default-device path with settings intact instead.
-            bool deviceBusy = Bass.LastError == Errors.Busy;
+            // Busy means another app holds exclusive mode right now — keep user's config intact!
+            bool deviceBusy = ToriiAudioEngine.LastError == TaError.Busy;
 
-            // exclusive mode fails whenever something else already holds the device or the
-            // hardware doesn't do the format, so step down to shared before giving up on
-            // WASAPI altogether. the user gets told about it via the bindable flipping back.
             if (UseExclusiveWasapi.Value && !deviceBusy)
             {
-                Logger.Log($"BASS device {device} failed to initialise with exclusive WASAPI, falling back to shared", level: LogLevel.Important);
+                Logger.Log($"Audio device {device} failed to initialise with exclusive WASAPI, falling back to low-latency shared", level: LogLevel.Important);
                 UseExclusiveWasapi.Value = false;
 
                 if (attemptInit())
@@ -504,8 +353,7 @@ namespace osu.Framework.Audio
             if (deviceBusy)
                 return false;
 
-            // in the case we're using experimental WASAPI, give a second chance of initialisation by forcefully disabling it.
-            Logger.Log($"BASS device {device} failed to initialise with experimental WASAPI, disabling", level: LogLevel.Error);
+            Logger.Log($"Audio device {device} failed to initialise with low-latency WASAPI, falling back to legacy shared", level: LogLevel.Error);
             UseExperimentalWasapi.Value = false;
             return attemptInit();
 
@@ -513,44 +361,36 @@ namespace osu.Framework.Audio
             {
                 thread.ExclusiveUpdatePeriodMs = ExclusiveUpdatePeriodMs.Value;
                 bool innerSuccess = thread.InitDevice(device, UseExperimentalWasapi.Value, UseExclusiveWasapi.Value);
-                bool alreadyInitialised = Bass.LastError == Errors.Already;
-
-                if (alreadyInitialised)
-                    return true;
-
-                // el retry de dispositivos corre cada segundo: el mismo error repetido
-                // se loguea una sola vez como notificacion y despues en silencio.
-                if (Bass.LastError != Errors.OK && Bass.LastError == lastFaultedError && device == lastFaultedDevice)
-                    return false;
-
-                if (BassUtils.CheckFaulted(false))
-                {
-                    lastFaultedError = Bass.LastError;
-                    lastFaultedDevice = device;
-                    return false;
-                }
-
-                lastFaultedError = Errors.OK;
-                lastFaultedDevice = -1;
 
                 if (!innerSuccess)
                 {
-                    Logger.Log("BASS failed to initialize but did not provide an error code", level: LogLevel.Error);
+                    if (ToriiAudioEngine.LastError != TaError.Ok && ToriiAudioEngine.LastError == lastFaultedError && device == lastFaultedDevice)
+                        return false;
+
+                    if (BassUtils.CheckFaulted(false))
+                    {
+                        lastFaultedError = ToriiAudioEngine.LastError;
+                        lastFaultedDevice = device;
+                        return false;
+                    }
+
+                    Logger.Log("torii_audio failed to initialize without an error code", level: LogLevel.Error);
                     return false;
                 }
 
-                var deviceInfo = audioDevices.ElementAtOrDefault(device);
+                lastFaultedError = TaError.Ok;
+                lastFaultedDevice = -1;
 
-                Logger.Log($@"🔈 BASS initialised
-                          BASS version:           {Bass.Version}
-                          BASS FX version:        {BassFx.Version}
-                          BASS MIX version:       {BassMix.Version}
-                          Device:                 {deviceInfo.Name}
-                          Driver:                 {deviceInfo.Driver}
-                          Device period length:   {devicePeriod}
-                          Device buffer length:   {Bass.DeviceBufferLength} ms
-                          Update period:          {Bass.UpdatePeriod} ms
-                          Playback buffer length: {Bass.PlaybackBufferLength} ms");
+                var deviceInfo = audioDevices.ElementAtOrDefault(device);
+                var caps = ToriiAudioEngine.ActiveCaps;
+
+                Logger.Log($@"🔈 torii_audio initialised (miniaudio + Signalsmith Stretch)
+                          Backend:       {caps.GetBackendName()}
+                          Device:        {deviceInfo.Name}
+                          Mode:          {(TaDeviceMode)caps.ActualMode}
+                          Format:        {caps.SampleRate}Hz {caps.Channels}ch {(caps.IsFloatOutput != 0 ? "Float32" : $"Int{caps.BitDepth}")}
+                          Period:        {caps.ActivePeriodMs:F2} ms
+                          Est. Latency:  {caps.OutputLatencyMs:F2} ms");
 
                 return true;
             }
@@ -560,8 +400,7 @@ namespace osu.Framework.Audio
         {
             audioDevices = GetAllDevices();
 
-            // Bass should always be providing "No sound" and "Default" device.
-            Trace.Assert(audioDevices.Length >= BASS_INTERNAL_DEVICE_COUNT, "Bass did not provide any audio devices.");
+            Trace.Assert(audioDevices.Length >= BASS_INTERNAL_DEVICE_COUNT, "Audio backend did not provide synthetic NoSound and Default devices.");
 
             var oldDeviceNames = audioDeviceNames;
             var newDeviceNames = audioDeviceNames = audioDevices.Skip(BASS_INTERNAL_DEVICE_COUNT).Where(d => d.IsEnabled).Select(d => d.Name).ToImmutableList();
@@ -590,63 +429,91 @@ namespace osu.Framework.Audio
             }
         }
 
-        /// <summary>
-        /// Check whether any audio device changes have occurred.
-        ///
-        /// Changes supported are:
-        /// - A new device is added
-        /// - An existing device is Enabled/Disabled or set as Default
-        /// </summary>
-        /// <remarks>
-        /// This method is optimised to incur the lowest overhead possible.
-        /// </remarks>
-        /// <param name="previousDevices">The previous audio devices array.</param>
-        /// <returns>Whether a change was detected.</returns>
-        protected virtual bool CheckForDeviceChanges(ImmutableArray<DeviceInfo> previousDevices)
+        protected virtual bool CheckForDeviceChanges(ImmutableArray<AudioDeviceInfo> previousDevices)
         {
-            int deviceCount = Bass.DeviceCount;
+            var current = GetAllDevices();
 
-            if (previousDevices.Length != deviceCount)
+            if (previousDevices.Length != current.Length)
                 return true;
 
-            for (int i = 0; i < deviceCount; i++)
+            for (int i = 0; i < current.Length; i++)
             {
-                var prevInfo = previousDevices[i];
-
-                Bass.GetDeviceInfo(i, out var info);
-
-                if (info.IsEnabled != prevInfo.IsEnabled)
+                if (current[i].IsEnabled != previousDevices[i].IsEnabled)
                     return true;
 
-                if (info.IsDefault != prevInfo.IsDefault)
+                if (current[i].IsDefault != previousDevices[i].IsDefault)
+                    return true;
+
+                if (current[i].Name != previousDevices[i].Name)
                     return true;
             }
 
             return false;
         }
 
-        protected virtual ImmutableArray<DeviceInfo> GetAllDevices()
+        protected virtual unsafe ImmutableArray<AudioDeviceInfo> GetAllDevices()
         {
-            int deviceCount = Bass.DeviceCount;
+            const int max_devices = 128;
+            TaDeviceInfo* raw = stackalloc TaDeviceInfo[max_devices];
+            int count = Math.Min(max_devices, ToriiAudioNative.ta_enumerate_devices(ToriiAudioEngine.Handle, raw, max_devices));
 
-            var devices = ImmutableArray.CreateBuilder<DeviceInfo>(deviceCount);
-            for (int i = 0; i < deviceCount; i++)
-                devices.Add(Bass.GetDeviceInfo(i));
+            var devices = ImmutableArray.CreateBuilder<AudioDeviceInfo>(BASS_INTERNAL_DEVICE_COUNT + count);
+
+            // [0] No sound
+            devices.Add(new AudioDeviceInfo
+            {
+                Name = "No sound",
+                Driver = "NoSound",
+                IsDefault = false,
+                IsEnabled = true,
+                IsInitialized = ToriiAudioEngine.CurrentDevice == ToriiAudioEngine.NO_SOUND_DEVICE,
+            });
+
+            // [1] Default
+            devices.Add(new AudioDeviceInfo
+            {
+                Name = "Default",
+                Driver = "Default",
+                IsDefault = true,
+                IsEnabled = true,
+                IsInitialized = ToriiAudioEngine.CurrentDevice == ToriiAudioEngine.DEFAULT_DEVICE,
+            });
+
+            // [2..N+1] Physical playback devices
+            for (int i = 0; i < count; i++)
+            {
+                int devIdx = BASS_INTERNAL_DEVICE_COUNT + i;
+                devices.Add(new AudioDeviceInfo
+                {
+                    Name = raw[i].GetName(),
+                    Driver = "miniaudio",
+                    IsDefault = raw[i].IsDefault != 0,
+                    IsEnabled = raw[i].IsEnabled != 0,
+                    IsInitialized = ToriiAudioEngine.CurrentDevice == devIdx,
+                });
+            }
 
             return devices.MoveToImmutable();
         }
 
-        // The current device is considered valid if it is enabled, initialized, and not a fallback device.
         protected virtual bool IsCurrentDeviceValid()
         {
-            var device = audioDevices.ElementAtOrDefault(Bass.CurrentDevice);
+            if (ToriiAudioNative.ta_device_is_lost(ToriiAudioEngine.Handle) != 0)
+                return false;
+
+            int current = ToriiAudioEngine.CurrentDevice;
+            if (current < 0 || current >= audioDevices.Length)
+                return false;
+
+            var device = audioDevices[current];
             bool isFallback = string.IsNullOrEmpty(AudioDevice.Value) ? !device.IsDefault : device.Name != AudioDevice.Value;
             return device.IsEnabled && device.IsInitialized && !isFallback;
         }
 
         public override string ToString()
         {
-            string deviceName = audioDevices.ElementAtOrDefault(Bass.CurrentDevice).Name;
+            int cur = ToriiAudioEngine.CurrentDevice;
+            string deviceName = cur >= 0 && cur < audioDevices.Length ? audioDevices[cur].Name : null;
             return $@"{GetType().ReadableName()} ({deviceName ?? "Unknown"})";
         }
     }

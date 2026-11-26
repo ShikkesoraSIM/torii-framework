@@ -2,9 +2,8 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System.Linq;
-using ManagedBass;
-using ManagedBass.Fx;
 using osu.Framework.Allocation;
+using osu.Framework.Audio.Mixing;
 using osu.Framework.Audio.Sample;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Audio;

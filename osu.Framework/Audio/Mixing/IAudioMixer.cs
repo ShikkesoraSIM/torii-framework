@@ -1,9 +1,6 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-using ManagedBass;
-using ManagedBass.Fx;
-
 namespace osu.Framework.Audio.Mixing
 {
     /// <summary>
@@ -27,9 +24,9 @@ namespace osu.Framework.Audio.Mixing
         /// <summary>
         /// Applies an effect to the mixer.
         /// </summary>
-        /// <param name="effect">The effect (e.g. <see cref="BQFEffect"/>.</param>
+        /// <param name="effect">The effect (e.g. <see cref="BQFParameters"/>).</param>
         /// <param name="priority">The effect priority. Lower values indicate higher priority and negative values are allowed.
-        ///     When there are multiple effects with the same priority, their ordering depends on the order in which they are added to the <see cref="IAudioMixer"/>.</param>
+        /// When there are multiple effects with the same priority, their ordering depends on the order in which they are added to the <see cref="IAudioMixer"/>.</param>
         void AddEffect(IEffectParameter effect, int priority = 0);
 
         /// <summary>
@@ -41,7 +38,7 @@ namespace osu.Framework.Audio.Mixing
         /// <summary>
         /// Updates an effect's parameters.
         /// </summary>
-        /// <param name="effect"></param>
+        /// <param name="effect">The effect.</param>
         void UpdateEffect(IEffectParameter effect);
     }
 }

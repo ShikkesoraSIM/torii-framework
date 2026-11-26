@@ -116,6 +116,7 @@ struct SampleChannelSlot {
 
     // RT voice state
     std::atomic<int32_t> rt_state{TA_STATE_STOPPED};
+    std::atomic<int32_t> logical_state{TA_STATE_STOPPED};
     std::atomic<int32_t> concurrency_claimed{0};
     std::atomic<uint64_t> start_order{0};
     double phase = 0.0;
@@ -526,8 +527,11 @@ static void renderTrack(TrackSlot& trk, float* out_stereo, uint32_t frames, int3
     // Publish exact audible CurrentTime (ms):
     // Because primeStretcher() uses outputSeek() to pre-align output sample 0 to src_cursor_frame,
     // src_cursor_frame IS the exact audible playback position with 0.00ms offset on BOTH 1.0x and DT/HT/Rate!
-    double reported_ms = (trk.src_cursor_frame / static_cast<double>(trk.src_sample_rate)) * 1000.0;
-    trk.published_time_ms.store(std::clamp(reported_ms, 0.0, trk.length_ms), std::memory_order_release);
+    // Use exact same (frame * 1000.0) / sr expression as length_ms so EOF is bit-for-bit identical (0 ULP).
+    double reported_ms = trk.has_completed
+        ? trk.length_ms
+        : std::clamp((trk.src_cursor_frame * 1000.0) / static_cast<double>(trk.src_sample_rate), 0.0, trk.length_ms);
+    trk.published_time_ms.store(reported_ms, std::memory_order_release);
     trk.published_playing.store(trk.has_completed ? 0 : 1, std::memory_order_release);
 }
 
@@ -596,6 +600,7 @@ static void renderSampleChannel(ta_engine* eng, SampleChannelSlot& ch, float* ou
                 ch.phase = std::fmod(ch.phase, static_cast<double>(total));
             } else {
                 ch.concurrency_claimed.store(0, std::memory_order_release);
+                ch.logical_state.store(TA_STATE_STOPPED, std::memory_order_release);
                 ch.rt_state.store(TA_STATE_STOPPED, std::memory_order_release);
                 break;
             }
@@ -1169,8 +1174,17 @@ TA_API int32_t ta_device_init(
             cfg.periodSizeInMilliseconds = 10;
             cfg.periods = 2;
         } else {
+#if defined(_WIN32)
+            // Request device minimum period (~2-3ms on Win10/11) so miniaudio uses IAudioClient3 low-latency shared!
+            double min_ms = 3.0, def_ms = 10.0;
+            int32_t mix_rate = 48000;
+            torii_audio::queryWasapiPeriods(target_id, min_ms, def_ms, mix_rate);
+            cfg.periodSizeInMilliseconds = static_cast<ma_uint32>(std::max(2.0, std::round(min_ms)));
+            cfg.periods = 2;
+#else
             cfg.periodSizeInMilliseconds = 0; // Device minimum low-latency shared period!
             cfg.periods = 2;
+#endif
         }
 
         last_ma_res = ma_device_init(&eng->context, &cfg, &eng->device);
@@ -1841,6 +1855,8 @@ TA_API void ta_sample_destroy(ta_engine* eng, int32_t sample_handle) {
     for (int32_t c = 0; c < torii_audio::kMaxSampleChannels; ++c) {
         if (eng->sample_channels[c].state.load(std::memory_order_acquire) == torii_audio::kSlotActive &&
             eng->sample_channels[c].sample_idx.load(std::memory_order_acquire) == idx) {
+            eng->sample_channels[c].concurrency_claimed.store(0, std::memory_order_release);
+            eng->sample_channels[c].logical_state.store(TA_STATE_STOPPED, std::memory_order_release);
             eng->sample_channels[c].rt_state.store(TA_STATE_STOPPED, std::memory_order_release);
             eng->sample_channels[c].sample_idx.store(-1, std::memory_order_release);
         }
@@ -1875,6 +1891,8 @@ TA_API int32_t ta_sample_channel_create(ta_engine* eng, int32_t sample_handle, i
             ch.applied_play_seq = 0;
             ch.applied_stop_seq = 0;
             ch.rt_state.store(TA_STATE_STOPPED, std::memory_order_relaxed);
+            ch.logical_state.store(TA_STATE_STOPPED, std::memory_order_relaxed);
+            ch.concurrency_claimed.store(0, std::memory_order_relaxed);
             ch.start_order.store(0, std::memory_order_relaxed);
             ch.phase = 0.0;
             ch.fading_out = false;
@@ -1923,11 +1941,13 @@ TA_API int32_t ta_sample_channel_play(ta_engine* eng, int32_t channel_handle) {
 
     if (active_count >= max_conc && oldest_idx >= 0) {
         eng->sample_channels[oldest_idx].concurrency_claimed.store(0, std::memory_order_release);
+        eng->sample_channels[oldest_idx].logical_state.store(TA_STATE_STOPPED, std::memory_order_release);
         eng->sample_channels[oldest_idx].stop_seq.fetch_add(1, std::memory_order_release);
     }
 
     ch.start_order.store(eng->voice_order_counter.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
     ch.concurrency_claimed.store(1, std::memory_order_release);
+    ch.logical_state.store(TA_STATE_PLAYING, std::memory_order_release);
     ch.rt_state.store(TA_STATE_PLAYING, std::memory_order_release);
     ch.play_seq.fetch_add(1, std::memory_order_release);
     return 1;
@@ -1940,6 +1960,8 @@ TA_API int32_t ta_sample_channel_stop(ta_engine* eng, int32_t channel_handle) {
     auto& ch = eng->sample_channels[idx];
     if (ch.state.load(std::memory_order_acquire) != torii_audio::kSlotActive) return 0;
 
+    ch.concurrency_claimed.store(0, std::memory_order_release);
+    ch.logical_state.store(TA_STATE_STOPPED, std::memory_order_release);
     ch.stop_seq.fetch_add(1, std::memory_order_release);
     return 1;
 }
@@ -1963,7 +1985,7 @@ TA_API int32_t ta_sample_channel_get_state(ta_engine* eng, int32_t channel_handl
     if (idx < 0 || idx >= torii_audio::kMaxSampleChannels) return TA_STATE_STOPPED;
     auto& ch = eng->sample_channels[idx];
     if (ch.state.load(std::memory_order_acquire) != torii_audio::kSlotActive) return TA_STATE_STOPPED;
-    return ch.rt_state.load(std::memory_order_acquire);
+    return ch.logical_state.load(std::memory_order_acquire);
 }
 
 TA_API void ta_sample_channel_destroy(ta_engine* eng, int32_t channel_handle) {
@@ -1973,6 +1995,8 @@ TA_API void ta_sample_channel_destroy(ta_engine* eng, int32_t channel_handle) {
     auto& ch = eng->sample_channels[idx];
     if (ch.state.load(std::memory_order_acquire) != torii_audio::kSlotActive) return;
 
+    ch.concurrency_claimed.store(0, std::memory_order_release);
+    ch.logical_state.store(TA_STATE_STOPPED, std::memory_order_release);
     ch.rt_state.store(TA_STATE_STOPPED, std::memory_order_release);
     ch.state.store(torii_audio::kSlotRetiring, std::memory_order_release);
     torii_audio::waitRtQuiescent(eng);
